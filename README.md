@@ -118,7 +118,7 @@ With a higher output baud rate (115200 Baud) the output transmission of 12 block
 | RX3 (15)  | Charger / Upstream 3 TX   | Serial3 — hardware UART       |
 | TX0 (1)   | Output                    | Serial0 — aggregated stream   |
 | GND       | Ground all inputs         | common ground                 |
-| 5V        | Power supply              | from VE.Direct pin 4          |
+| 5V        | Power supply              | 5 V from external source      |
 
 VE.Direct uses 5V TTL — directly compatible with the Arduino Mega. No level shifter required. The 5V supply (max. 100 mA) from one of the chargers is sufficient for the Mega.
 
@@ -129,7 +129,7 @@ VE.Direct uses 5V TTL — directly compatible with the Arduino Mega. No level sh
 | 1   | GND          | to Mega GND        |
 | 2   | TX (output)  | to Mega RX1/2/3    |
 | 3   | RX (input)   | not connected      |
-| 4   | +5V          | Mega power supply  |
+| 4   | +5V          | not connected      |
 
 ---
 
@@ -154,7 +154,7 @@ VE.Direct uses 5V TTL — directly compatible with the Arduino Mega. No level sh
 | Max. chargers (star)    | 9                                       |
 | Max. chargers (cascade) | 9 at 19200 / 12 at 115200 Baud output   |
 | Type detection          | automatic, once at startup              |
-| Power supply            | 5V from VE.Direct pin 4                 |
+| Power supply            | 5V from external source                 |
 | CPU load                | < 1 % at 3 chargers                     |
 | Latency                 | < 1 block period (~83 ms)               |
 
