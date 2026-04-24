@@ -61,7 +61,7 @@
 #define DETECT_LINES     3
 #define CMD_BUF_SIZE     64
 #define HEX_TIMEOUT      1000     // ms, timeout for HEX reply
-#define REG_MAX_CURRENT  0xEDF0   // VE.Direct: Charger Maximum Current (mA)
+#define REG_MAX_CURRENT  0x2015    // VE.Direct: Charge Current Limit (unit: 0.1A, volatile — safe for frequent writes)
 
 HardwareSerial* ports[] = {&Serial1, &Serial2, &Serial3};
 const int N = sizeof(ports) / sizeof(ports[0]);
@@ -165,6 +165,8 @@ bool wait_hex_reply(HardwareSerial* port, char* rbuf, int rsize) {
 // parse 16-bit little-endian value from HEX GET reply
 // reply format: :5<reg_lo><reg_hi><flags><val_lo><val_hi><cs>\n
 // positions:     0 1 2 3 4 5 6 7 8 9 10 11 12 13
+// returns raw register value — for 0x2015: deciamps (0.1A units)
+// convert to amps: value / 10.0f
 uint16_t parse_hex_value(const char* reply) {
 	// reply[0]=':' reply[1]='5' then 4 reg chars + 2 flag chars = pos 9
 	if (strlen(reply) < 13) return 0xFFFF;
@@ -184,17 +186,18 @@ void exec_set(int idx, uint32_t watts) {
 	const char* pid      = known_pid[idx];
 	char reply[64];
 
-	// convert watts to milliamps using last known Vbat
+	// convert watts to amps (0.1A resolution for register 0x2015)
 	// guard against zero/invalid Vbat
-	float vbat = (known_vbat[idx] > 1.0f) ? known_vbat[idx] : 24.0f;
-	uint16_t milliamps = (uint16_t)((watts * 1000.0f) / vbat);
+	float    vbat     = (known_vbat[idx] > 1.0f) ? known_vbat[idx] : 24.0f;
+	float    amps     = (float)watts / vbat;				// e.g. 19.5 A
+	uint16_t deciamps = (uint16_t)(amps * 10.0f + 0.5f);	// round to nearest 0.1A
 
 	// 1. send SET
-	send_hex_set(port, REG_MAX_CURRENT, milliamps);
+	send_hex_set(port, REG_MAX_CURRENT, deciamps);
 
 	// 2. wait for HEX ACK
 	if (!wait_hex_reply(port, reply, sizeof(reply))) {
-		char msg[40];
+		char msg[48];
 		sprintf(msg, "ERR %s timeout\n", pid);
 		Serial.print(msg);
 		send_text_mode(port);
@@ -207,20 +210,27 @@ void exec_set(int idx, uint32_t watts) {
 
 	// 4. wait for GET reply
 	if (!wait_hex_reply(port, reply, sizeof(reply))) {
-		char msg[40];
+		char msg[48];
 		sprintf(msg, "ERR %s timeout\n", pid);
 		Serial.print(msg);
 		send_text_mode(port);
 		return;
 	}
 
-	// 5. check readback
+	// 5. check readback — compare in deciamps, report in A with 1 decimal
 	uint16_t readback = parse_hex_value(reply);
-	char msg[48];
-	if (readback == milliamps) {
-		sprintf(msg, "OK %s %lu\n", pid, watts);
+	char msg[64];
+	if (readback == deciamps) {
+		float a_set = deciamps / 10.0f;
+		// format: OK <pid> <watts>W <amps>A
+		char abuf[12]; dtostrf(a_set, 4, 1, abuf);
+		sprintf(msg, "OK %s %luW %sA\n", pid, watts, abuf);
 	} else {
-		sprintf(msg, "ERR %s verify\n", pid);
+		float a_set = deciamps  / 10.0f;
+		float a_rb  = readback  / 10.0f;
+		char abuf_set[12]; dtostrf(a_set, 4, 1, abuf_set);
+		char abuf_rb[12];  dtostrf(a_rb,  4, 1, abuf_rb);
+		sprintf(msg, "ERR %s verify set=%sA rb=%sA\n", pid, abuf_set, abuf_rb);
 	}
 
 	// 6. restore text mode — do NOT wait for text to resume
@@ -267,19 +277,22 @@ void process_cmd(char* line) {
 
 	if (is_all) {
 		// pseudo-multicast: send HEX SET to all direct ports simultaneously
+		// register 0x2015 unit is 0.1A  →  reg_value = round(amps * 10)
 		for (int i = 0; i < N; i++) {
 			if (port_type[i] == DIRECT && pid_known[i]) {
 				float vbat = (known_vbat[i] > 1.0f) ? known_vbat[i] : 24.0f;
-				uint16_t ma = (uint16_t)((watts * 1000.0f) / vbat);
-				send_hex_set(ports[i], REG_MAX_CURRENT, ma);
+				float amps = (float)watts / vbat;
+				uint16_t da = (uint16_t)(amps * 10.0f + 0.5f);
+				send_hex_set(ports[i], REG_MAX_CURRENT, da);
 			}
 		}
 		// collect replies, verify, restore text mode one by one
 		for (int i = 0; i < N; i++) {
 			if (port_type[i] == DIRECT && pid_known[i]) {
-				float vbat  = (known_vbat[i] > 1.0f) ? known_vbat[i] : 24.0f;
-				uint16_t ma = (uint16_t)((watts * 1000.0f) / vbat);
-				char reply[64]; char msg[48];
+				float    vbat = (known_vbat[i] > 1.0f) ? known_vbat[i] : 24.0f;
+				float    amps = (float)watts / vbat;
+				uint16_t da   = (uint16_t)(amps * 10.0f + 0.5f);
+				char reply[64]; char msg[64];
 
 				if (!wait_hex_reply(ports[i], reply, sizeof(reply))) {
 					sprintf(msg, "ERR %s timeout\n", known_pid[i]);
@@ -293,8 +306,14 @@ void process_cmd(char* line) {
 					sprintf(msg, "ERR %s timeout\n", known_pid[i]);
 				} else {
 					uint16_t rb = parse_hex_value(reply);
-					if (rb == ma) sprintf(msg, "OK %s %lu\n",   known_pid[i], watts);
-					else          sprintf(msg, "ERR %s verify\n", known_pid[i]);
+					if (rb == da) {
+						char abuf[12]; dtostrf(da / 10.0f, 4, 1, abuf);
+						sprintf(msg, "OK %s %luW %sA\n", known_pid[i], watts, abuf);
+					} else {
+						char abuf_set[12]; dtostrf(da / 10.0f, 4, 1, abuf_set);
+						char abuf_rb[12];  dtostrf(rb / 10.0f, 4, 1, abuf_rb);
+						sprintf(msg, "ERR %s verify set=%sA rb=%sA\n", known_pid[i], abuf_set, abuf_rb);
+					}
 				}
 				send_text_mode(ports[i]);
 				Serial.print(msg);
@@ -363,12 +382,10 @@ void learn_from_line(int idx, const char* line) {
 		}
 		pid_known[idx] = true;
 	}
-	// learn Vbat every cycle — "V\t<millivolts>" maps to name "Vbat" after
-	// the aggregator renames it, but here we see the raw line before renaming
-	// raw field name is "V" (voltage in mV)
+	// learn Vbat every cycle — raw field "V" = battery voltage in mV → stored as V
 	if (strncmp(line, "V\t", 2) == 0) {
 		long mv = atol(line + 2);
-		if (mv > 0) known_vbat[idx] = mv / 1000.0f;
+		if (mv > 0) known_vbat[idx] = mv / 1000.0f;	// mV → V
 	}
 }
 
