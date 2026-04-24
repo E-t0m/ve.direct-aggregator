@@ -60,10 +60,11 @@ ERR <pid> verify\n      readback value does not match
 
 ### Automatic watts-to-amps conversion
 
-The Mega learns the current battery voltage (`Vbat`) from the live text stream and automatically converts the watt value of a SET command to milliamps:
+The Mega learns the current battery voltage (`Vbat`) from the live text stream and automatically converts the watt value of a SET command to amps with 0.1A resolution:
 
 ```
-mA = (watts × 1000) / Vbat
+A    = watts / Vbat                  (float, e.g. 19.5 A)
+reg  = round(A × 10)                 (register value in 0.1A units)
 ```
 
 Until the first Vbat value is received (~1–2 seconds after startup) a fallback of 24V is used.
@@ -151,6 +152,17 @@ When a SET command arrives the text aggregator pauses for the affected charger. 
     — do NOT wait for text stream to resume
 ```
 
+**Register used: `0x2015` — Charge Current Limit**
+
+| Property    | Value |
+|-------------|-------|
+| Register    | `0x2015` |
+| Unit        | 0.1A |
+| Storage     | volatile — unlimited write cycles |
+| Conversion  | `round(watts / Vbat × 10)` → register value |
+
+`0x2015` is preferred over the non-volatile register `0xEDF0` — the latter has limited write cycles and is not suitable for frequent updates.
+
 The gap in the text stream of the affected charger is the signal to the receiver that a SET command was executed. No separate notification is sent.
 
 For `SET ALL` all HEX SET commands are sent simultaneously (pseudo-multicast), replies and verification are then handled one by one.
@@ -173,31 +185,52 @@ At 12 chargers and 19200 baud the 1-second window is fully consumed. The practic
 
 ---
 
+## Firmware Variants
+
+Three variants are available depending on the required feature set:
+
+| File | Features |
+|------|----------|
+| `vedirect_single.ino` | Direct chargers only, no upstream, no SET channel |
+| `vedirect_multiple.ino` | Auto type detection DIRECT/UPSTREAM, no SET channel |
+| `vedirect_multiple_powerset.ino` | Full: type detection + SET channel + HEX power control |
+
+All three variants share the same output format (`---\tN\r\n` marker + blocks) and are mutually compatible — a `single` output can feed a `multiple` or `multiple_powerset` upstream port.
+
+---
+
 ## Pin Assignment Arduino Mega 2560
 
-| Pin       | Signal                          | Description                         |
-|-----------|---------------------------------|-------------------------------------|
-| RX1 (19)  | Charger / Upstream 1 TX         | Serial1 — read text stream          |
-| TX1 (18)  | Charger / Upstream 1 RX         | Serial1 — HEX commands / SET fwd    |
-| RX2 (17)  | Charger / Upstream 2 TX         | Serial2 — read text stream          |
-| TX2 (16)  | Charger / Upstream 2 RX         | Serial2 — HEX commands / SET fwd    |
-| RX3 (15)  | Charger / Upstream 3 TX         | Serial3 — read text stream          |
-| TX3 (14)  | Charger / Upstream 3 RX         | Serial3 — HEX commands / SET fwd    |
-| TX0 (1)   | Output + OK/ERR replies         | Serial0 — aggregated stream         |
-| RX0 (0)   | SET command input               | Serial0 — from downstream / host    |
-| GND       | Ground all inputs               | common ground                       |
-| 5V        | Power supply                    | external DC/DC or USB               |
+### All variants
+
+| Pin       | Signal                  | Description                    |
+|-----------|-------------------------|--------------------------------|
+| RX1 (19)  | Charger / Upstream 1 TX | Serial1 — read text stream     |
+| RX2 (17)  | Charger / Upstream 2 TX | Serial2 — read text stream     |
+| RX3 (15)  | Charger / Upstream 3 TX | Serial3 — read text stream     |
+| TX0 (1)   | Output                  | Serial0 — aggregated stream    |
+| GND       | Ground all inputs       | common ground                  |
+| 5V        | Power supply            | external DC/DC or USB          |
+
+### `multiple_powerset` only (SET channel)
+
+| Pin       | Signal                  | Description                         |
+|-----------|-------------------------|-------------------------------------|
+| TX1 (18)  | Charger / Upstream 1 RX | Serial1 — HEX commands / SET fwd    |
+| TX2 (16)  | Charger / Upstream 2 RX | Serial2 — HEX commands / SET fwd    |
+| TX3 (14)  | Charger / Upstream 3 RX | Serial3 — HEX commands / SET fwd    |
+| RX0 (0)   | SET command input       | Serial0 — from downstream / host    |
 
 VE.Direct uses 5V TTL — directly compatible with the Arduino Mega. No level shifter required.
 
 ### VE.Direct Connector Pinout (JST-PH 2 mm, 4-pin)
 
-| Pin | Signal       | Usage                               |
-|-----|--------------|-------------------------------------|
-| 1   | GND          | to Mega GND                         |
-| 2   | TX (output)  | to Mega RX1/2/3                     |
-| 3   | RX (input)   | to Mega TX1/2/3 — for SET commands  |
-| 4   | +5V          | max. 10 mA — not suitable for Mega  |
+| Pin | Signal       | Usage                                              |
+|-----|--------------|-----------------------------------------------------|
+| 1   | GND          | to Mega GND                                         |
+| 2   | TX (output)  | to Mega RX1/2/3                                     |
+| 3   | RX (input)   | to Mega TX1/2/3 — `multiple_powerset` only          |
+| 4   | +5V          | max. 10 mA — not suitable for Mega                  |
 
 ---
 
@@ -246,7 +279,7 @@ In these cases galvanic isolation should be implemented **downstream of the Mega
 | Target platform            | Arduino Mega 2560 (ATmega2560, 16 MHz)   |
 | Input baud rate            | 19200 baud, 8N1                          |
 | Output baud rate           | 19200 baud, 8N1 (configurable)           |
-| Max. inputs                | 3 × hardware UART bidirectional          |
+| Max. inputs                | 3 × hardware UART (RX only for single/multiple, RX+TX for powerset) |
 | Max. chargers (direct)     | 3                                        |
 | Max. chargers (star)       | 9                                        |
 | Max. chargers (cascade)    | 9 at 19200 / 12 at 115200 baud output    |
