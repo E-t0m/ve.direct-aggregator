@@ -1,6 +1,6 @@
 # VE.Direct Aggregator — Technical Specification
 
-**Firmware · Arduino Mega 2560 / Teensy 4.1 · v1.0**
+**Firmware · Arduino Mega 2560 / Teensy 4.1 · v1.0 · 2026**
 
 ---
 
@@ -38,12 +38,12 @@ All variants share the same output format (`---\tN\r\n` marker + blocks) and are
 **Example — mixed star topology:**
 
 ```
-MPPT 1─7  ──► [Teensy multiple] ──TTL──┐
-MPPT 8─10 ──► [Mega multiple]   ──TTL──┼──► [Mega multiple] ──► output
-MPPT 11─13──► [Mega multiple]   ──TTL──┘
+MPPT 1─7  ──► [Teensy single] ──TTL──┐
+MPPT 8─10 ──► [Mega single]   ──TTL──┼──► [Mega multiple] ──► output
+MPPT 11─13──► [Mega single]   ──TTL──┘
 ```
 
-The central Mega sees three upstream streams and does not distinguish between the Teensy and Mega sources — all deliver the same `---\tN\r\n` format. Result: 13 chargers on a single output.
+The central Mega runs `multiple` and sees three upstream streams — it does not distinguish between the Teensy and Mega sources, all deliver the same `---\tN\r\n` format. The upstream MCUs run `single` — they only have direct chargers and never need upstream detection. Result: 13 chargers on a single output.
 
 **Note:** 13 chargers × ~83 ms = ~1079 ms at 19200 baud output — this exceeds the 1-second transmit interval. Set `BAUD_OUT` to `115200` on the central Mega to bring transmission time down to ~182 ms.
 
