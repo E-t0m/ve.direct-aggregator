@@ -31,6 +31,8 @@ Six variants are available depending on the required feature set and target hard
 
 All variants share the same output format (`---\tN\r\n` marker + blocks) and are mutually compatible — any variant's output can feed another variant's upstream input. Mega and Teensy variants can be freely mixed in star and cascade topologies.
 
+**Using `multiple_powerset` everywhere:** Since `multiple_powerset` is a strict superset — it auto-detects port type and the SET channel does nothing when unused — it can be flashed on all MCUs in a topology without functional difference. The upstream MCUs simply never receive SET commands and their TX pins remain idle. This simplifies firmware management at the cost of slightly higher code complexity on each MCU.
+
 **Why mixing works:** The aggregator protocol is purely serial and hardware-agnostic. Each MCU only sees bytes on its input pins — it does not know or care whether the upstream device is a Mega, a Teensy, or a direct charger. As long as baud rate (19200) and signal levels are matched, any combination is valid.
 
 **Signal level when mixing:** The Mega operates at 5V TTL, the Teensy at 3.3V. When connecting a Mega output to a Teensy input, a BSS138 level shifter is required on the Teensy RX pin. When connecting a Teensy output to a Mega input, no level shifter is needed — the Mega RX pin is 5V tolerant and correctly reads 3.3V high signals.
