@@ -3,16 +3,14 @@
 //
 // ── Wiring ──────────────────────────────────────────────────────────────
 //
-//   Serial1 RX/TX  ↔  charger or upstream Mega 1
-//   Serial2 RX/TX  ↔  charger or upstream Mega 2
-//   Serial3 RX/TX  ↔  charger or upstream Mega 3
-//   Serial0 TX     →  aggregated text stream out + OK/ERR replies
-//   Serial0 RX     ←  SET commands from downstream Mega or RPi
+//   Serial1–7 RX/TX ↔  charger or upstream 1–7
+//   Serial8 TX      →  aggregated text stream out + OK/ERR replies
+//   Serial8 RX      ←  SET commands from downstream / host
 //
-//   In cascade: downstream Mega TX0 → this Mega RX0
-//               this Mega TX0       → downstream Mega RX0
-//               this Mega TX1/2/3   → upstream Mega RX0  (SET forwarding)
-//               upstream Mega TX0   → this Mega RX1/2/3  (text + replies)
+//   In cascade: downstream MCU TX  → this Teensy RX8
+//               this Teensy TX8    → downstream MCU RX
+//               this Teensy TX1–7  → upstream MCU RX    (SET forwarding)
+//               upstream MCU TX    → this Teensy RX1–7  (text + replies)
 //
 // ── Text aggregation ────────────────────────────────────────────────────
 //
@@ -23,11 +21,11 @@
 //
 // ── SET command channel ─────────────────────────────────────────────────
 //
-//   Received on Serial0 RX:
+//   Received on Serial8 RX:
 //     SET <pid> <watts>\n     limit single charger by PID
 //     SET ALL <watts>\n       limit all chargers (pseudo-multicast)
 //
-//   Sent on Serial0 TX:
+//   Sent on Serial8 TX:
 //     OK <pid> <watts>\n      setting verified by HEX GET re-read
 //     ERR <pid> timeout\n     no HEX reply within HEX_TIMEOUT ms
 //     ERR <pid> verify\n      re-read value does not match
@@ -36,7 +34,7 @@
 //   SET ALL sends HEX to all direct ports simultaneously (pseudo-multicast),
 //   then verifies and restores text mode one by one.
 //   Unknown PIDs are forwarded on TX of all upstream ports.
-//   OK/ERR replies from upstream are passed through on Serial0 TX.
+//   OK/ERR replies from upstream are passed through on Serial8 TX.
 //
 // ── HEX sequence per charger ────────────────────────────────────────────
 //
@@ -46,7 +44,7 @@
 //   4. wait  for HEX GET reply             (1s timeout → ERR timeout)
 //   5. check readback == sent value        (mismatch → ERR verify)
 //   6. send  :154\n                        (switch back to text mode)
-//   7. send  OK/ERR on Serial0             (do NOT wait for text resume)
+//   7. send  OK/ERR on Serial8             (do NOT wait for text resume)
 //
 // ── Text gap during HEX ─────────────────────────────────────────────────
 //
@@ -250,7 +248,7 @@ void exec_set(int idx, uint32_t watts) {
 void forward_set_upstream(const char* fwd) {
 	for (int i = 0; i < N; i++) {
 		if (port_type[i] == UPSTREAM) {
-			// TX of Serial1/2/3 goes to RX0 of the upstream Mega
+			// TX of Serial1–7 goes to RX of the upstream MCU
 			ports[i]->print(fwd);
 			ports[i]->print('\n');
 		}
@@ -322,7 +320,7 @@ void process_cmd(char* line) {
 				Serial8.print(msg);
 			}
 		}
-		// forward to upstream Megas
+		// forward to upstream MCUs
 		char fwd[32];
 		sprintf(fwd, "SET ALL %lu", watts);
 		forward_set_upstream(fwd);
@@ -339,7 +337,7 @@ void process_cmd(char* line) {
 			}
 		}
 		if (!found) {
-			// unknown PID — forward to all upstream Megas
+			// unknown PID — forward to all upstream MCUs
 			char fwd[48];
 			sprintf(fwd, "SET %s %lu", pid_str, watts);
 			forward_set_upstream(fwd);
@@ -350,7 +348,7 @@ void process_cmd(char* line) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Read SET commands on Serial0 RX
+// Read SET commands on Serial8 RX
 // ═══════════════════════════════════════════════════════════════════════
 
 void read_cmd() {
