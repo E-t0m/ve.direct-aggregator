@@ -241,13 +241,12 @@ void exec_set(int idx, uint32_t watts) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Forward SET command on TX of all upstream ports
+// Forward SET/HEX command on TX of all upstream ports
 // ═══════════════════════════════════════════════════════════════════════
 
-void forward_set_upstream(const char* fwd) {
+void forward_upstream(const char* fwd) {
 	for (int i = 0; i < N; i++) {
 		if (port_type[i] == UPSTREAM) {
-			// TX of Serial1/2/3 goes to RX0 of the upstream Mega
 			ports[i]->print(fwd);
 			ports[i]->print('\n');
 		}
@@ -255,11 +254,42 @@ void forward_set_upstream(const char* fwd) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Process a complete SET command line
+// Execute arbitrary HEX string on a single direct port
+// hex_str must be a complete VE.Direct HEX line e.g. ":154\n"
+// ═══════════════════════════════════════════════════════════════════════
+
+void exec_hex(int idx, const char* hex_str) {
+	HardwareSerial* port = ports[idx];
+	const char* pid      = known_pid[idx];
+	char reply[64];
+
+	// send raw HEX string — no parsing, no conversion
+	port->print(hex_str);
+	if (hex_str[strlen(hex_str)-1] != '\n') port->print('\n');
+
+	// wait for reply
+	if (!wait_hex_reply(port, reply, sizeof(reply))) {
+		char msg[48];
+		sprintf(msg, "ERR %s timeout\n", pid);
+		Serial.print(msg);
+		return;
+	}
+
+	// pass reply back downstream with PID prefix
+	char msg[96];
+	sprintf(msg, "HEX_REPLY %s %s", pid, reply);
+	Serial.print(msg);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Process a complete command line (SET or HEX)
 // ═══════════════════════════════════════════════════════════════════════
 
 void process_cmd(char* line) {
-	if (strncmp(line, "SET ", 4) != 0) return;
+	bool is_set = (strncmp(line, "SET ", 4) == 0);
+	bool is_hex = (strncmp(line, "HEX ", 4) == 0);
+	if (!is_set && !is_hex) return;
+
 	char* p = line + 4;
 
 	// parse PID or ALL
@@ -268,10 +298,43 @@ void process_cmd(char* line) {
 	while (*p && *p != ' ' && ti < 19) pid_str[ti++] = *p++;
 	pid_str[ti] = '\0';
 	if (*p == ' ') p++;
-	uint32_t watts = (uint32_t)atol(p);
-	if (watts == 0) return;
+	// p now points to: watts (SET) or hex_string (HEX)
 
 	bool is_all = (strcmp(pid_str, "ALL") == 0);
+
+	if (is_hex) {
+		// ── HEX command: pass raw string to charger(s) ──────────────────
+		hex_busy = true;
+		if (is_all) {
+			for (int i = 0; i < N; i++) {
+				if (port_type[i] == DIRECT && pid_known[i]) exec_hex(i, p);
+			}
+			char fwd[96];
+			sprintf(fwd, "HEX ALL %s", p);
+			forward_upstream(fwd);
+		} else {
+			bool found = false;
+			for (int i = 0; i < N; i++) {
+				if (port_type[i] == DIRECT && pid_known[i] &&
+					strcmp(known_pid[i], pid_str) == 0) {
+					exec_hex(i, p);
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				char fwd[96];
+				sprintf(fwd, "HEX %s %s", pid_str, p);
+				forward_upstream(fwd);
+			}
+		}
+		hex_busy = false;
+		return;
+	}
+
+	// ── SET command: watts-based power limit ────────────────────────────
+	uint32_t watts = (uint32_t)atol(p);
+	if (watts == 0 && p[0] != '0') return;   // reject malformed input
 
 	hex_busy = true;
 
@@ -319,10 +382,10 @@ void process_cmd(char* line) {
 				Serial.print(msg);
 			}
 		}
-		// forward to upstream Megas
+		// forward to upstream MCUs
 		char fwd[32];
 		sprintf(fwd, "SET ALL %lu", watts);
-		forward_set_upstream(fwd);
+		forward_upstream(fwd);
 
 	} else {
 		// single PID
@@ -336,10 +399,10 @@ void process_cmd(char* line) {
 			}
 		}
 		if (!found) {
-			// unknown PID — forward to all upstream Megas
+			// unknown PID — forward to all upstream MCUs
 			char fwd[48];
 			sprintf(fwd, "SET %s %lu", pid_str, watts);
-			forward_set_upstream(fwd);
+			forward_upstream(fwd);
 		}
 	}
 
