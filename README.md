@@ -99,6 +99,33 @@ ERR <pid> timeout\n             no HEX ACK within 1s
 ERR <pid> verify set=XA rb=YA\n readback mismatch
 ```
 
+### Arbitrary HEX passthrough
+
+*(`multiple_powerset` only)*
+
+The host can send any VE.Direct HEX string directly to a charger by PID. The firmware passes it verbatim without parsing or validation. The reply is returned prefixed with the PID.
+
+**Command format:**
+```
+HEX <pid> <hex_string>\n    send to single charger
+HEX ALL <hex_string>\n      broadcast to all chargers
+```
+
+**Reply format:**
+```
+HEX_REPLY <pid> :<hex_response>\n
+ERR <pid> timeout\n
+```
+
+Examples:
+```
+HEX 0xA053 :154\n            restore text mode
+HEX ALL :154\n               restore text mode on all
+HEX 0xA053 :70015200A3\n     arbitrary GET
+```
+
+The host is responsible for correct HEX formatting including checksum. For `HEX` commands the host must restore text mode manually if needed — the firmware does not do this automatically (unlike `SET`).
+
 ### Automatic watts-to-amps conversion
 
 *(`multiple_powerset` only)*
