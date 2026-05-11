@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ve_aggregator.py — VE.Direct Aggregator client module
+Version: 1.1
 
 Provides a single class VEDirect that combines:
   - readtext:  continuous parsing of the aggregated VE.Direct stream
@@ -14,11 +15,11 @@ Usage:
     vd.start()
 
     # read device data
-    data = vd.get_all()           # {pid: {field: value, ...}}
-    mppt = vd.get('0xA053')       # single device or None
+    data = vd.get_all()           # {'PID:SER#': {field: value, ...}}
+    mppt = vd.get('0xA060:HQ2529K6QK4')  # single device or None
 
     # set charge power (readtext_sendhex only)
-    vd.set_watts('0xA053', 500)   # single device
+    vd.set_watts('0xA053', 500)   # single device by PID
     vd.set_watts('ALL', 1500)     # all devices
 
     # send arbitrary HEX command
@@ -39,6 +40,8 @@ Usage:
 Dependencies:
     pyserial
 """
+
+VERSION = '1.1'
 
 from serial      import Serial, SerialException
 from threading   import Thread, Event, Lock
@@ -69,11 +72,22 @@ def _parse_value(name, raw):
 		return raw
 
 
+def _check_checksum(raw_bytes):
+	"""
+	Validate VE.Direct block checksum.
+	The sum of all bytes in the block (including the Checksum byte) must be 0 mod 256.
+	Returns True if valid, False if invalid.
+	"""
+	return sum(raw_bytes) % 256 == 0
+
+
 def _parse_block(raw_bytes):
 	"""
 	Parse a complete VE.Direct text block into a dict.
-	Returns dict with field names as keys, or None if block has no PID.
+	Returns dict with field names as keys, or None if block has no PID or invalid checksum.
 	"""
+	if not _check_checksum(raw_bytes):
+		return None
 	fields = {}
 	try:
 		text = raw_bytes.decode('ascii', errors='replace')
@@ -172,6 +186,7 @@ class VEDirect:
 		self._reply_queue= Queue()   # Reply objects
 
 		self._last_sent  = {}        # {pid: (watts, timestamp)}
+		self._last_alive = 0.0       # timestamp of last ALIVE signal or data block
 
 		self._stop       = Event()
 		self._ser        = None
@@ -184,6 +199,8 @@ class VEDirect:
 	def start(self):
 		"""Start background threads."""
 		self._stop.clear()
+		self._last_alive = time()    # assume alive at start
+		print(f've_aggregator v{VERSION} — opening {self.port} at {self.baud} baud')
 		self._t_reader = Thread(target=self._reader, daemon=True, name='vd-reader')
 		self._t_sender = Thread(target=self._sender, daemon=True, name='vd-sender')
 		self._t_reader.start()
@@ -242,6 +259,13 @@ class VEDirect:
 		if max_age > 0 and time() - d.get('ts', 0) > max_age:
 			return None
 		return dict(d)
+
+	def is_alive(self, timeout=15.0):
+		"""
+		Return True if MCU is alive — received data or ALIVE signal within timeout.
+		timeout — seconds since last activity (default 15s, firmware sends every 10s)
+		"""
+		return time() - self._last_alive < timeout
 
 	def pids(self, max_age=None):
 		"""Return set of currently active PIDs."""
@@ -367,8 +391,8 @@ class VEDirect:
 
 	def _reader(self):
 		"""Background thread: read bytes, parse blocks and reply lines."""
-		buf  = bytearray()
-		prev = 0
+		buf      = bytearray()   # current VE.Direct block accumulator
+		line_buf = bytearray()   # current line accumulator (for ALIVE/reply detection)
 
 		while not self._stop.is_set():
 			if not self._open_serial():
@@ -381,26 +405,52 @@ class VEDirect:
 					try: self._ser.close()
 					except Exception: pass
 					self._ser = None
-				buf.clear(); prev = 0
+				buf.clear(); line_buf.clear()
 				continue
 
 			for b in chunk:
-				if b == ord('\n') and prev == ord('\n'):
-					# block complete
-					if buf:
+				c = chr(b)
+
+				# accumulate line buffer (strip \r, end on \n)
+				if c == '\r':
+					pass
+				elif c == '\n':
+					line = line_buf.decode('ascii', errors='replace').strip()
+					line_buf.clear()
+					if line == 'ALIVE':
+						self._last_alive = time()
+						buf.clear()
+						continue
+					if line.startswith(('OK ', 'ERR ', 'HEX_REPLY ')):
+						self._reply_queue.put(Reply(line))
+						buf.clear()
+						continue
+					# block end: Checksum line
+					if line.startswith('Checksum\t') and buf:
+						buf.append(b)   # include the \n
 						self._handle_block(bytes(buf))
-					buf.clear(); prev = 0
-					continue
-				buf.append(b)
-				prev = b
-				if len(buf) > 1024:   # safety: discard oversized
-					buf.clear(); prev = 0
+						buf.clear()
+						continue
+				else:
+					line_buf.append(b)
+
+				# accumulate block bytes — skip \r and \n before first data byte
+				if buf or c not in ('\r', '\n'):
+					buf.append(b)
+
+				if len(buf) > 1024:
+					buf.clear()
 
 	def _handle_block(self, raw):
-		"""Parse block — either a VE.Direct data block or a reply line."""
+		"""Parse block — either a VE.Direct data block, a reply line or ALIVE."""
 		try:
 			text = raw.decode('ascii', errors='replace').strip()
 		except Exception:
+			return
+
+		# ALIVE keepalive from firmware — update connection timestamp, ignore otherwise
+		if text == 'ALIVE':
+			self._last_alive = time()
 			return
 
 		# single-line replies from sendhex firmware
@@ -411,10 +461,13 @@ class VEDirect:
 		# VE.Direct data block
 		block = _parse_block(raw)
 		if block:
-			pid = str(block.get('PID', ''))
+			pid  = str(block.get('PID', ''))
+			ser  = str(block.get('SER#', ''))
+			key  = f'{pid}:{ser}' if ser else pid
 			block['ts'] = time()
 			with self._data_lock:
-				self._data[pid] = block
+				self._data[key] = block
+			self._last_alive = time()
 
 	def _sender(self):
 		"""Background thread: send queued commands over serial."""
@@ -455,7 +508,7 @@ def iter_devices(data):
 if __name__ == '__main__':
 	from time import sleep
 
-	PORT = '/dev/ttyUSB0'
+	PORT = '/dev/ttyACM3'
 
 	print(f'Connecting to {PORT}...\n')
 
