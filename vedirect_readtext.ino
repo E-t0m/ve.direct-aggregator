@@ -1,77 +1,103 @@
-// VE.Direct readtext — v1.2 — Arduino Mega 2560
-// Serial1/2/3 RX → devices, Serial0 TX → output (also via USB)
-// Block end: Checksum\t line. Devices identified by PID + SER#.
-// Not compatible with Cerbo GX / Venus GX as direct receiver.
+// VE.Direct readtext — v1.6 — Arduino Mega 2560
+// Aggregates N VE.Direct text streams into one serial output.
+// Completed blocks are queued in a circular TX queue — no block is ever
+// dropped due to send backpressure, even when multiple ports finish
+// simultaneously or an upstream port delivers bursts.
 
-#define ALIVE_TIMEOUT  10000UL  // ms without block → send ALIVE\r\n
-#define BAUD_VEDIRECT  19200    // VE.Direct standard — fixed by Victron
-#define BAUD_UPSTREAM  115200   // MCU-to-MCU in cascade topology
-#define BAUD_OUT       19200    // output — set to BAUD_UPSTREAM for cascade
-#define BUF_SIZE       512      // max bytes per block (~200 typical)
-#define N              3        // number of input ports
+#define SERIAL_RX_BUFFER_SIZE 256   // ~107ms at 19200 baud per port
+
+#define ALIVE_TIMEOUT  10000UL
+#define BAUD_VEDIRECT  19200
+#define BAUD_UPSTREAM  115200
+#define BAUD_OUT       19200
+#define BUF_SIZE       300          // max bytes per VE.Direct block
+#define N              3            // number of input ports
+#define Q_SIZE         12           // TX queue depth
 
 HardwareSerial* ports[N] = {&Serial1, &Serial2, &Serial3};
+uint32_t port_baud[N]    = {BAUD_VEDIRECT, BAUD_VEDIRECT, BAUD_VEDIRECT};
 
-// per-port input baud — change to BAUD_UPSTREAM for cascade inputs
-uint32_t port_baud[N] = {BAUD_VEDIRECT, BAUD_VEDIRECT, BAUD_VEDIRECT};
+// ── receive buffers (one per port) ────────────────────────────────────
+char rx_buf[N][BUF_SIZE];
+int  rx_len[N]  = {0, 0, 0};
+int  rx_line[N] = {0, 0, 0};
 
-char buf[N][BUF_SIZE];
-int  buf_len[N]    = {0, 0, 0};
-int  line_start[N] = {0, 0, 0};
-bool ready[N]      = {false, false, false};
+// ── circular TX queue ─────────────────────────────────────────────────
+char q_buf[Q_SIZE][BUF_SIZE];
+int  q_len[Q_SIZE] = {0, 0, 0, 0, 0, 0};
+int  q_head = 0;   // next slot to send
+int  q_tail = 0;   // next free slot
 
-char          send_buf[BUF_SIZE];
-int           send_port = -1;
-int           send_pos  =  0;
-int           send_len  =  0;
-unsigned long last_send =  0;
+inline bool q_full()  { return ((q_tail + 1) % Q_SIZE) == q_head; }
+inline bool q_empty() { return q_head == q_tail; }
+
+bool q_push(const char* data, int len) {
+	if (q_full()) return false;
+	memcpy(q_buf[q_tail], data, len);
+	q_len[q_tail] = len;
+	q_tail = (q_tail + 1) % Q_SIZE;
+	return true;
+}
+
+// ── output state ──────────────────────────────────────────────────────
+int           out_pos   = 0;
+unsigned long last_send = 0;
 
 void setup() {
 	Serial.begin(BAUD_OUT);
 	for (int i = 0; i < N; i++) ports[i]->begin(port_baud[i]);
 }
 
+// ── receive ────────────────────────────────────────────────────────────
+
 void read_device(int idx) {
-	HardwareSerial* port = ports[idx];
-	while (port->available() && !ready[idx]) {
-		char c = port->read();
-		if (buf_len[idx] == 0 && (c == '\r' || c == '\n')) continue;
-		if (buf_len[idx] < BUF_SIZE - 1) buf[idx][buf_len[idx]++] = c;
+	while (ports[idx]->available()) {
+		char c = ports[idx]->read();
+
+		// skip leading CR/LF before block starts
+		if (rx_len[idx] == 0 && (c == '\r' || c == '\n')) continue;
+
+		// overflow: discard and resync
+		if (rx_len[idx] >= BUF_SIZE - 1) {
+			rx_len[idx]  = 0;
+			rx_line[idx] = 0;
+			continue;
+		}
+
+		rx_buf[idx][rx_len[idx]++] = c;
+
 		if (c == '\n') {
-			if (strncmp(&buf[idx][line_start[idx]], "Checksum\t", 9) == 0) {
-				ready[idx] = true;
+			if (strncmp(&rx_buf[idx][rx_line[idx]], "Checksum\t", 9) == 0) {
+				// enqueue block — drop if queue full (should never happen at N=3, Q=6)
+				q_push(rx_buf[idx], rx_len[idx]);
+				rx_len[idx]  = 0;
+				rx_line[idx] = 0;
 				return;
 			}
-			line_start[idx] = buf_len[idx];
+			rx_line[idx] = rx_len[idx];
 		}
 	}
 }
 
+// ── send ──────────────────────────────────────────────────────────────
+
 void send_next() {
-	if (send_port >= 0) {
-		while (send_pos < send_len) {
-			if (Serial.availableForWrite() == 0) return;
-			Serial.write(send_buf[send_pos++]);
-		}
-		last_send = millis();
-		send_port = -1;
-		return;
+	if (q_empty()) return;
+
+	// send bytes from current head block
+	while (out_pos < q_len[q_head]) {
+		if (Serial.availableForWrite() == 0) return;
+		Serial.write(q_buf[q_head][out_pos++]);
 	}
-	for (int i = 0; i < N; i++) {
-		if (ready[i]) {
-			memcpy(send_buf, buf[i], buf_len[i]);
-			send_len      = buf_len[i];
-			send_port     = i;
-			send_pos      = 0;
-			buf_len[i]    = 0;
-			line_start[i] = 0;
-			ready[i]      = false;
-			return;
-		}
-	}
+
+	// block fully sent
+	last_send = millis();
+	out_pos   = 0;
+	q_head    = (q_head + 1) % Q_SIZE;
 }
 
 void send_alive() {
+	if (!q_empty()) return;
 	if (millis() - last_send >= ALIVE_TIMEOUT) {
 		Serial.print("ALIVE\r\n");
 		last_send = millis();
