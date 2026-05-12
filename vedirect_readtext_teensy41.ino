@@ -1,94 +1,117 @@
-// VE.Direct readtext — Teensy 4.1
-// Serial1–7 RX → device 1–7
-
-
-// Serial8  TX → output (or SerialUSB if OUTPUT_USB=1)
+// VE.Direct readtext — v1.6 — Teensy 4.1
+// Serial1..7 RX → devices, Serial8 or SerialUSB → output
+// Circular TX queue — no block dropped due to send backpressure.
 //
-// Output is a plain sequential VE.Direct text stream.
-// Each block starts with PID\t... and ends with \r\n\r\n.
-// Blocks are sent immediately when complete, one at a time.
-// The receiving end identifies devices by their PID field.
-//
-// Compatible with: any VE.Direct text parser
-// Not compatible with: Cerbo GX / Venus GX as direct receiver
-//
+// OUTPUT_USB 0 → TX8 pin (Serial8)
+// OUTPUT_USB 1 → SerialUSB native USB (/dev/ttyACM0)
 
+// Teensy 4.1: 512KB RAM — large buffers
+#define SERIAL_RX_BUFFER_SIZE 1024  // ~427ms at 19200 baud per port
 
-
-// Note: VE.Direct is 5V TTL — use BSS138 level shifter on each RX input.
-//
-// Output selection:
-//   OUTPUT_USB 0  →  Serial8 TX8 pin
-//   OUTPUT_USB 1  →  SerialUSB native USB (host sees /dev/ttyACM0)
-#define OUTPUT_USB 0
+#define OUTPUT_USB     0
+#define ALIVE_TIMEOUT  10000UL
+#define BAUD_VEDIRECT  19200
+#define BAUD_UPSTREAM  115200
+#define BAUD_OUT       19200
+#define BUF_SIZE       300          // max bytes per VE.Direct block
+#define N              7            // number of input ports
+#define Q_SIZE         12           // TX queue depth
 
 #if OUTPUT_USB
-  #define SEROUT SerialUSB
+	#define SEROUT SerialUSB
 #else
-  #define SEROUT Serial8
+	#define SEROUT Serial8
 #endif
 
-#define BAUD      19200
-#define BAUD_OUT  19200   // set to 115200 for higher throughput
-#define BUF_SIZE  512
-#define NUM_PORTS 7
-
-HardwareSerial* ports[] = {
+HardwareSerial* ports[N] = {
 	&Serial1, &Serial2, &Serial3, &Serial4,
 	&Serial5, &Serial6, &Serial7
 };
-const int N = sizeof(ports) / sizeof(ports[0]);
 
-char  buf[NUM_PORTS][BUF_SIZE];
-int   buf_len[NUM_PORTS] = {0, 0, 0, 0, 0, 0, 0};
-bool  ready[NUM_PORTS]   = {false, false, false, false, false, false, false};
-char  prev[NUM_PORTS]    = {0, 0, 0, 0, 0, 0, 0};
+uint32_t port_baud[N] = {
+	BAUD_VEDIRECT, BAUD_VEDIRECT, BAUD_VEDIRECT, BAUD_VEDIRECT,
+	BAUD_VEDIRECT, BAUD_VEDIRECT, BAUD_VEDIRECT
+};
+
+// ── receive buffers ────────────────────────────────────────────────────
+char rx_buf[N][BUF_SIZE];
+int  rx_len[N]  = {0, 0, 0, 0, 0, 0, 0};
+int  rx_line[N] = {0, 0, 0, 0, 0, 0, 0};
+
+// ── circular TX queue ─────────────────────────────────────────────────
+char q_buf[Q_SIZE][BUF_SIZE];
+int  q_len[Q_SIZE] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+int  q_head = 0;
+int  q_tail = 0;
+
+inline bool q_full()  { return ((q_tail + 1) % Q_SIZE) == q_head; }
+inline bool q_empty() { return q_head == q_tail; }
+
+bool q_push(const char* data, int len) {
+	if (q_full()) return false;
+	memcpy(q_buf[q_tail], data, len);
+	q_len[q_tail] = len;
+	q_tail = (q_tail + 1) % Q_SIZE;
+	return true;
+}
+
+// ── output state ──────────────────────────────────────────────────────
+int           out_pos   = 0;
+unsigned long last_send = 0;
 
 void setup() {
-	#if OUTPUT_USB
-	SEROUT.begin(0);
-#else
 	SEROUT.begin(BAUD_OUT);
-#endif;
-	for (int i = 0; i < N; i++) {
-		ports[i]->begin(BAUD);
-	}
+	for (int i = 0; i < N; i++) ports[i]->begin(port_baud[i]);
 }
+
+// ── receive ────────────────────────────────────────────────────────────
 
 void read_device(int idx) {
-	HardwareSerial* port = ports[idx];
-	while (port->available() && !ready[idx]) {
-		char c = port->read();
-		if (c == '\n' && prev[idx] == '\n') {
-			if (buf_len[idx] > 0) {
-				if (buf_len[idx] < BUF_SIZE - 1) buf[idx][buf_len[idx]++] = c;
-				ready[idx] = true;
-			}
-			prev[idx] = 0;
-			return;
+	while (ports[idx]->available()) {
+		char c = ports[idx]->read();
+		if (rx_len[idx] == 0 && (c == '\r' || c == '\n')) continue;
+		if (rx_len[idx] >= BUF_SIZE - 1) {
+			rx_len[idx]  = 0;
+			rx_line[idx] = 0;
+			continue;
 		}
-		prev[idx] = c;
-		if (buf_len[idx] < BUF_SIZE - 1) buf[idx][buf_len[idx]++] = c;
+		rx_buf[idx][rx_len[idx]++] = c;
+		if (c == '\n') {
+			if (strncmp(&rx_buf[idx][rx_line[idx]], "Checksum\t", 9) == 0) {
+				q_push(rx_buf[idx], rx_len[idx]);
+				rx_len[idx]  = 0;
+				rx_line[idx] = 0;
+				return;
+			}
+			rx_line[idx] = rx_len[idx];
+		}
 	}
 }
 
-// send one ready block — first ready port wins, no block mixing possible
+// ── send ──────────────────────────────────────────────────────────────
+
 void send_next() {
-	for (int i = 0; i < N; i++) {
-		if (ready[i]) {
-			SEROUT.write(buf[i], buf_len[i]);
-			SEROUT.flush();
-			buf_len[i] = 0;
-			ready[i]   = false;
-			prev[i]    = 0;
-			return;
-		}
+	if (q_empty()) return;
+	while (out_pos < q_len[q_head]) {
+		if (SEROUT.availableForWrite() == 0) return;
+		SEROUT.write(q_buf[q_head][out_pos++]);
+	}
+	last_send = millis();
+	out_pos   = 0;
+	q_head    = (q_head + 1) % Q_SIZE;
+}
+
+void send_alive() {
+	if (!q_empty()) return;
+	if (millis() - last_send >= ALIVE_TIMEOUT) {
+		SEROUT.print("ALIVE\r\n");
+		last_send = millis();
 	}
 }
 
 void loop() {
-	for (int i = 0; i < N; i++) {
-		read_device(i);
-	}
 	send_next();
+	for (int i = 0; i < N; i++) read_device(i);
+	send_next();
+	send_alive();
 }
