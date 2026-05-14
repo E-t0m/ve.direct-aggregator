@@ -5,6 +5,9 @@
 // simultaneously or an upstream port delivers bursts.
 
 #define SERIAL_RX_BUFFER_SIZE 256   // ~107ms at 19200 baud per port
+#if BUF_SIZE > SERIAL_RX_BUFFER_SIZE
+#error "BUF_SIZE exceeds SERIAL_RX_BUFFER_SIZE — increase hardware RX buffer"
+#endif
 
 #define ALIVE_TIMEOUT  10000UL
 #define BAUD_VEDIRECT  19200
@@ -24,7 +27,7 @@ int  rx_line[N] = {0, 0, 0};
 
 // ── circular TX queue ─────────────────────────────────────────────────
 char q_buf[Q_SIZE][BUF_SIZE];
-int  q_len[Q_SIZE] = {0, 0, 0, 0, 0, 0};
+int  q_len[Q_SIZE] = {0};
 int  q_head = 0;   // next slot to send
 int  q_tail = 0;   // next free slot
 
@@ -32,7 +35,7 @@ inline bool q_full()  { return ((q_tail + 1) % Q_SIZE) == q_head; }
 inline bool q_empty() { return q_head == q_tail; }
 
 bool q_push(const char* data, int len) {
-	if (q_full()) return false;
+	if (q_full() || len > BUF_SIZE) return false;
 	memcpy(q_buf[q_tail], data, len);
 	q_len[q_tail] = len;
 	q_tail = (q_tail + 1) % Q_SIZE;
@@ -68,11 +71,11 @@ void read_device(int idx) {
 
 		if (c == '\n') {
 			if (strncmp(&rx_buf[idx][rx_line[idx]], "Checksum\t", 9) == 0) {
-				// enqueue block — drop if queue full (should never happen at N=3, Q=6)
-				q_push(rx_buf[idx], rx_len[idx]);
+				// enqueue — silently drop if queue full
+				q_push(rx_buf[idx], rx_len[idx]);   // drop silently if full — receiver will notice missing blocks
 				rx_len[idx]  = 0;
 				rx_line[idx] = 0;
-				return;
+				continue;
 			}
 			rx_line[idx] = rx_len[idx];
 		}
