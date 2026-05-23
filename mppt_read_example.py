@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+# mppt_read_example.py — v2.0 — columnar MPPT display with timing stats
 from ve_aggregator import VEDirect
 from time import sleep, time
 from datetime import datetime
@@ -23,7 +24,6 @@ with VEDirect(PORT, BAUD) as vd:
 
 		if vd._last_alive != last_alive_shown:
 			last_alive_shown = vd._last_alive
-			# total avg across all devices
 			all_intervals = []
 			for times in block_times.values():
 				if len(times) >= 2:
