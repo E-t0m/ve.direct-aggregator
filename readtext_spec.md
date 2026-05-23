@@ -1,6 +1,6 @@
 # VE.Direct Aggregator — Readtext Stream Specification
 
-**Output stream format of `readtext` and `readtext_sendhex` firmware · v1.0 · 2026**
+**Output stream format of `readtext` and `readtext_sendhex` firmware · v2.0 · 2026**
 
 ---
 
@@ -8,7 +8,7 @@
 
 The readtext stream is the aggregated output of the VE.Direct Aggregator firmware. It is a plain sequential VE.Direct text stream — standard VE.Direct format, multiple devices multiplexed onto a single serial connection.
 
-The receiving end identifies individual devices by their `PID` field. No separator characters, no packet markers, no block counts are used.
+The receiving end identifies individual devices by their `SER#` field. `PID` alone is insufficient as multiple devices of the same type share the same PID value.
 
 ---
 
@@ -16,7 +16,7 @@ The receiving end identifies individual devices by their `PID` field. No separat
 
 | Parameter | Value |
 |-----------|-------|
-| Baud rate | 19200 (configurable via `BAUD_OUT`) |
+| Baud rate | `BAUD_OUT` (default `BAUD_VEDIRECT` = 19200) |
 | Data bits | 8 |
 | Parity | None |
 | Stop bits | 1 |
@@ -25,54 +25,71 @@ The receiving end identifies individual devices by their `PID` field. No separat
 
 ## Stream Format
 
-The stream consists of back-to-back VE.Direct text blocks. Each block is sent immediately when complete — one block at a time, no mixing.
+The stream consists of back-to-back VE.Direct text blocks. Each block is enqueued immediately when the `Checksum\t` line is received — the receive buffer is freed instantly so the next block can be read while the current one is being sent. Blocks are sent one at a time, no mixing between devices.
 
 ### Block structure
 
-```
-PID\t0xA053\r\n
-VPV\t18240\r\n
-PPV\t120\r\n
-V\t25600\r\n
-I\t5200\r\n
-CS\t3\r\n
-MPPT\t2\r\n
-ERR\t0\r\n
-Checksum\tX\r\n
-\r\n
-```
-
 Each block:
 - starts with `PID\t<hex_id>\r\n`
-- ends with `\r\n\r\n` (two consecutive `\n` characters)
 - contains one field per line in `NAME\tVALUE\r\n` format
-- ends with a `Checksum\t<byte>\r\n` line (checksum byte, not printable)
+- ends with `Checksum\t<byte>\r\n`
 
-### Multi-device stream example
+**Block end detection:** the `Checksum\t` line signals the end of a VE.Direct block. There is no separator between blocks and no double newline — the next block starts immediately with `PID\t` after the checksum line.
 
 ```
-PID\t0xA053\r\n    ┐
-V\t25600\r\n       │ device 1
-...\r\n\r\n        ┘
-PID\t0xA060\r\n    ┐
-V\t25580\r\n       │ device 2
-...\r\n\r\n        ┘
-PID\t0x204\r\n     ┐
-V\t25590\r\n       │ device 3 (e.g. BMV)
-...\r\n\r\n        ┘
-PID\t0xA053\r\n    ┐
-V\t25620\r\n       │ device 1 — next cycle
-...\r\n\r\n        ┘
+PID\t0xA060\r\n
+FW\t174\r\n
+SER#\tHQ2529K6QK4\r\n
+V\t52010\r\n
+I\t-60\r\n
+VPV\t10\r\n
+PPV\t0\r\n
+CS\t0\r\n
+MPPT\t0\r\n
+OR\t0x00000001\r\n
+ERR\t0\r\n
+LOAD\tON\r\n
+IL\t0\r\n
+H19\t0\r\n
+...
+HSDS\t0\r\n
+Checksum\t<byte>\r\n
+PID\t0xA060\r\n       ← next block starts immediately
+...
 ```
+
+### WHO / firmware identification
+
+On receipt of `WHO\n` the firmware responds with:
+
+```
+READTEXT Mega2560 N=3\n
+READTEXT Teensy41 N=7\n
+SENDHEX Mega2560 N=3\n   (readtext_sendhex variant)
+```
+
+This allows the host to detect which firmware variant and port count is active.
+
+---
+
+### ALIVE signal
+
+If no block has been sent for `ALIVE_TIMEOUT` ms (default 10s), the firmware sends:
+
+```
+ALIVE\r\n
+```
+
+This is not a VE.Direct field. It signals that the MCU is running but no device data is available. Standard VE.Direct parsers ignore it. The `ve_aggregator` Python module recognises it and updates the connection timestamp.
 
 ---
 
 ## Device Identification
 
-Each device is uniquely identified by its `PID` field. The PID is a hex string assigned by Victron to each product family.
+Devices are identified by `SER#`. The `ve_aggregator` module uses `SER#` as the internal device key.
 
-| PID | Device |
-|-----|--------|
+| PID | Device family |
+|-----|--------------|
 | `0xA040`–`0xA05F` | BlueSolar MPPT |
 | `0xA060`–`0xA07F` | SmartSolar MPPT |
 | `0x0203`–`0x0205` | BMV-600 series |
@@ -80,93 +97,79 @@ Each device is uniquely identified by its `PID` field. The PID is a hex string a
 | `0xA381` | SmartShunt |
 | `0xA290`–`0xA2B0` | Phoenix Inverter |
 
-A complete PID list is available in the Victron VE.Direct protocol documentation.
-
 ---
 
 ## Field Reference
 
-Common fields across VE.Direct devices. Units as received from device — see conversion notes below.
-
 ### MPPT Solar Charger
 
-| Field | Unit | Description |
-|-------|------|-------------|
-| `PID` | — | Product ID (hex string) |
-| `FW` | — | Firmware version |
-| `SER#` | — | Serial number |
-| `V` | mV | Battery voltage |
-| `I` | mA | Battery current |
-| `VPV` | mV | PV input voltage |
-| `PPV` | W | PV input power |
-| `CS` | — | Charge state (0=Off, 2=Fault, 3=Bulk, 4=Absorb, 5=Float) |
-| `MPPT` | — | MPPT state (0=Off, 1=Limited, 2=Active) |
-| `ERR` | — | Error code (0=No error) |
-| `LOAD` | — | Load output state (ON/OFF) |
-| `IL` | mA | Load current |
-| `H1`–`H23` | Wh/W | Historical data |
-| `HSDS` | — | Day sequence number |
+| Field | Unit (raw) | Converted | Description |
+|-------|-----------|-----------|-------------|
+| `PID` | string | — | Product ID |
+| `FW` | string | — | Firmware version |
+| `SER#` | string | — | Serial number |
+| `V` | mV | V (÷1000) | Battery voltage |
+| `I` | mA | A (÷1000) | Battery current |
+| `VPV` | mV | V (÷1000) | PV input voltage |
+| `PPV` | W | W | PV input power |
+| `CS` | int | string | Charge state |
+| `MPPT` | int | string | MPPT state |
+| `ERR` | int | string | Error code |
+| `LOAD` | string | — | Load output (ON/OFF) |
+| `IL` | mA | A (÷1000) | Load current |
+| `OR` | hex string | — | Off reason (bitmask) |
+| `H19`–`H23` | Wh | Wh | Historical energy |
+| `HSDS` | int | — | Day sequence number |
+
+**CS values:** 0=Off, 2=Fault, 3=Bulk, 4=Absorption, 5=Float, 7=Equalise, 245=Starting, 247=Auto Equalise, 252=External control
+
+**MPPT values:** 0=Off, 1=Voltage/current limited, 2=Active
 
 ### BMV Battery Monitor / SmartShunt
 
-| Field | Unit | Description |
-|-------|------|-------------|
-| `V` | mV | Main battery voltage |
-| `VS` | mV | Aux/starter battery voltage |
-| `VM` | mV | Mid-point voltage |
-| `DM` | ‰ | Mid-point deviation |
-| `I` | mA | Battery current |
-| `T` | °C | Battery temperature |
-| `P` | W | Instantaneous power |
-| `CE` | mAh | Consumed Ah |
-| `SOC` | ‰ | State of charge |
-| `TTG` | min | Time to go |
-| `Alarm` | — | Alarm (ON/OFF) |
-| `Relay` | — | Relay state (ON/OFF) |
-| `AR` | — | Alarm reason (bitmask) |
-| `OR` | — | Off reason (bitmask) |
-| `H1`–`H18` | mAh/W | Historical data |
-
-### Phoenix Inverter
-
-| Field | Unit | Description |
-|-------|------|-------------|
-| `V` | mV | Battery voltage |
-| `AC_OUT_V` | 0.01V | AC output voltage |
-| `AC_OUT_I` | 0.1A | AC output current |
-| `AC_OUT_S` | VA | AC output apparent power |
-| `WARN` | — | Warning reason |
-| `CS` | — | State |
+| Field | Unit (raw) | Converted | Description |
+|-------|-----------|-----------|-------------|
+| `V` | mV | V (÷1000) | Main battery voltage |
+| `VS` | mV | V (÷1000) | Aux/starter battery voltage |
+| `I` | mA | A (÷1000) | Battery current |
+| `T` | °C | °C | Battery temperature |
+| `P` | W | W | Instantaneous power |
+| `CE` | mAh | Ah (÷1000) | Consumed Ah |
+| `SOC` | ‰ | ‰ | State of charge |
+| `TTG` | min | min | Time to go |
+| `Alarm` | string | — | Alarm state (ON/OFF) |
+| `Relay` | string | — | Relay state (ON/OFF) |
+| `AR` | int | — | Alarm reason (bitmask) |
+| `OR` | int | — | Off reason (bitmask) |
 
 ---
 
-## Unit Conventions
+## Checksum
 
-VE.Direct transmits values in scaled integer units. The `ve_aggregator` Python module converts automatically on parse:
+Each VE.Direct block includes a `Checksum` field. The checksum byte is chosen such that the sum of all bytes in the block (including the checksum byte itself) equals 0 modulo 256.
 
-| Raw unit | Converted to | Fields |
-|----------|-------------|--------|
-| mV | V (float) | `V`, `VS`, `VM`, `VPV` |
-| mA | A (float) | `I`, `IL` |
-| mAh | Ah (float) | `CE` |
-| W | W (int) | `PPV`, `P` |
-| ‰ | ‰ (int) | `SOC`, `DM` |
-| — | string | `PID`, `SER#`, `FW`, `CS`, `ERR`, etc. |
+```python
+assert sum(block_bytes) % 256 == 0
+```
+
+The firmware forwards all blocks without checksum validation — blocks are relayed as received. The `ve_aggregator` Python module validates checksums and silently discards invalid blocks.
+
+**Note:** the checksum is computed over all raw bytes from `PID\t` through and including `Checksum\t<byte>\r\n`.
 
 ---
 
 ## Timing
 
-VE.Direct devices transmit once per second. The aggregator sends each block immediately when complete — the inter-block gap on the stream depends on how many devices are connected and their relative timing.
+VE.Direct devices transmit once per second. The aggregator sends each block immediately when the `Checksum\t` line is received.
 
-At 19200 baud a typical block (~200 bytes) takes ~83 ms to transmit. With N devices the stream utilisation is approximately `N × 83 ms` per second.
+At `BAUD_VEDIRECT` (19200 baud) a typical block (~200 bytes) takes ~83 ms to transmit. At `BAUD_UPSTREAM` (115200 baud) ~14 ms.
 
-| Devices | Stream utilisation |
-|---------|--------------------|
-| 1 | ~8 % |
-| 3 | ~25 % |
-| 7 | ~58 % |
-| 9 | ~75 % |
+| Devices | Time at 19200 | Utilisation | Headroom |
+|---------|--------------|-------------|----------|
+| 1 | ~83 ms | 8 % | 917 ms |
+| 3 | ~249 ms | 25 % | 751 ms |
+| 7 | ~581 ms | 58 % | 419 ms |
+| 9 | ~747 ms | 75 % | 253 ms |
 
 ---
 
@@ -174,22 +177,59 @@ At 19200 baud a typical block (~200 bytes) takes ~83 ms to transmit. With N devi
 
 | Receiver | Compatible | Notes |
 |----------|-----------|-------|
-| Any VE.Direct text parser | ✓ | Standard format |
-| `ve_aggregator` Python module | ✓ | Full support, auto unit conversion |
-| Cerbo GX / Venus GX | ✗ | Expects one device per port |
-
----
-
-## Checksum
-
-Each VE.Direct block includes a `Checksum` field. The checksum byte is chosen such that the sum of all bytes in the block (including the checksum byte itself) equals 0 modulo 256. The `Checksum` line is the last line of each block.
-
-Parsers that do not validate the checksum can ignore the `Checksum` line.
+| `ve_aggregator` Python module | ✓ | Full support |
+| Any VE.Direct text parser | ✓ | Reads blocks sequentially, ignores ALIVE |
+| Cerbo GX / Venus GX | via Deagg. | `vedirect_deaggregator.py` required |
 
 ---
 
 ## Limitations
 
-- The stream is read-only — no commands or responses are part of the readtext stream
-- For bidirectional communication (SET/HEX) use the `readtext_sendhex` firmware and refer to the Powerset Interface Specification
-- Cerbo GX / Venus GX cannot be used as direct receiver
+- Devices are identified by `SER#` — receivers must not rely on `PID` alone
+- The stream is read-only — no commands or responses on the readtext stream
+- For bidirectional communication (SET/HEX) use `readtext_sendhex` firmware
+- Cerbo GX / Venus GX cannot be used as direct receiver — use `vedirect_deaggregator.py`
+
+---
+
+## De-Aggregation and Venus OS / Cerbo GX
+
+The aggregated stream can be split back into individual virtual serial ports
+using `vedirect_deaggregator.py`. Each MPPT appears as its own `/dev/pts/N`
+port, which Venus OS and Cerbo GX can register as separate VE.Direct devices.
+
+See `deaggregator_spec.md` for setup details.
+
+---
+
+## DS18B20 Temperature Sensor (optional)
+
+One or more DS18B20 1-Wire sensors can be connected to a single digital pin
+(`TEMP_PIN`, default D2). Each sensor is emitted as a pseudo VE.Direct block:
+
+```
+PID     0x9999
+SER#    TEMP-P2-S0
+FW      100
+TEMP    23.50
+Checksum  <byte>
+```
+
+The de-aggregator creates a virtual port for each sensor automatically.
+Venus OS sees them as independent devices.
+
+**Wiring (3-wire, any number of sensors on one pin):**
+- VCC -> 5V
+- GND -> GND
+- DATA -> TEMP_PIN, with 4.7k pull-up resistor between 5V and DATA
+
+**Configuration in firmware:**
+```c
+#define TEMP_ENABLE  1      // 0 = disabled
+#define TEMP_PIN     2      // digital pin for 1-Wire DATA
+#define TEMP_INTERVAL 5000  // readout interval in ms
+```
+
+No sensor connected -> `temp_count = 0` -> no blocks emitted, no overhead.
+
+**Required libraries:** OneWire + DallasTemperature (Arduino Library Manager).
