@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ve_aggregator.py — VE.Direct Aggregator client module
-Version: 1.1
+Version: 2.0
 
 Provides a single class VEDirect that combines:
   - readtext:  continuous parsing of the aggregated VE.Direct stream
@@ -11,11 +11,11 @@ Provides a single class VEDirect that combines:
 Usage:
     from ve_aggregator import VEDirect
 
-    vd = VEDirect('/dev/ttyUSB0')
+    vd = VEDirect('/dev/ttyACM3')
     vd.start()
 
     # read device data
-    data = vd.get_all()           # {'PID:SER#': {field: value, ...}}
+    data = vd.get_all()           # {'SER#': {field: value, ...}}
     mppt = vd.get('0xA060:HQ2529K6QK4')  # single device or None
 
     # set charge power (readtext_sendhex only)
@@ -34,14 +34,17 @@ Usage:
     vd.stop()
 
     # or use as context manager:
-    with VEDirect('/dev/ttyUSB0') as vd:
+    with VEDirect('/dev/ttyACM3') as vd:
         ...
 
 Dependencies:
     pyserial
+
+See also: vedirect_deaggregator.py — splits the aggregated stream into
+individual virtual serial ports for Venus OS / Cerbo GX.
 """
 
-VERSION = '1.1'
+VERSION = '2.0'
 
 from serial      import Serial, SerialException
 from threading   import Thread, Event, Lock
@@ -64,10 +67,14 @@ def _parse_value(name, raw):
 		return raw
 	try:
 		v = int(raw)
-		if name in ('V', 'VS', 'VM', 'VPV'):   return v / 1000.0   # mV → V
-		if name in ('I', 'IL'):                 return v / 1000.0   # mA → A
-		if name in ('CE',):                     return v / 1000.0   # mAh → Ah
+		if name in ('V', 'VS', 'VM', 'VPV'):   return v / 1000.0   # mV -> V
+		if name in ('I', 'IL'):                 return v / 1000.0   # mA -> A
+		if name in ('CE',):                     return v / 1000.0   # mAh -> Ah
 		return v
+	except (ValueError, TypeError):
+		pass
+	try:
+		return float(raw)   # e.g. TEMP field from DS18B20 pseudo-block
 	except (ValueError, TypeError):
 		return raw
 
@@ -179,14 +186,15 @@ class VEDirect:
 		self.device_timeout = device_timeout
 		self.pid_timeout    = pid_timeout
 
-		self._data       = {}        # {pid: {field: value, 'ts': float}}
+		self._data       = {}        # {ser: {field: value, 'ts': float}}
 		self._data_lock  = Lock()
 
 		self._cmd_queue  = Queue()   # (cmd_str,) — raw command lines
 		self._reply_queue= Queue()   # Reply objects
 
-		self._last_sent  = {}        # {pid: (watts, timestamp)}
+		self._last_sent  = {}        # {ser: (watts, timestamp)}
 		self._last_alive = 0.0       # timestamp of last ALIVE signal or data block
+		self._firmware   = None      # firmware identification string (from WHO response)
 
 		self._stop       = Event()
 		self._ser        = None
@@ -197,14 +205,21 @@ class VEDirect:
 	# ── lifecycle ─────────────────────────────────────────────────────────────
 
 	def start(self):
-		"""Start background threads."""
+		"""Start background threads and probe firmware type."""
 		self._stop.clear()
-		self._last_alive = time()    # assume alive at start
+		self._last_alive = time()
+		self._firmware   = None
 		print(f've_aggregator v{VERSION} — opening {self.port} at {self.baud} baud')
 		self._t_reader = Thread(target=self._reader, daemon=True, name='vd-reader')
 		self._t_sender = Thread(target=self._sender, daemon=True, name='vd-sender')
 		self._t_reader.start()
 		self._t_sender.start()
+		# probe firmware type after brief settle
+		def _probe():
+			from time import sleep as _sleep
+			_sleep(1.0)
+			self._cmd_queue.put('WHO\n')
+		Thread(target=_probe, daemon=True).start()
 		return self
 
 	def stop(self):
@@ -229,7 +244,7 @@ class VEDirect:
 
 	def get_all(self, max_age=None):
 		"""
-		Return dict of all known devices: {pid: {field: value, ...}}
+		Return dict of all known devices: {ser: {field: value, ...}}
 
 		max_age — exclude devices older than this (seconds).
 		          Defaults to self.device_timeout. Pass 0 for no filter.
@@ -240,20 +255,33 @@ class VEDirect:
 		with self._data_lock:
 			if max_age <= 0:
 				return dict(self._data)
-			return {pid: dict(d) for pid, d in self._data.items()
+			return {ser: dict(d) for ser, d in self._data.items()
 			        if now - d.get('ts', 0) <= max_age}
 
-	def get(self, pid, max_age=None):
+	def get(self, identifier, max_age=None):
 		"""
-		Return data for a single device by PID string, or None.
+		Return data for a single device by SER# or PID, or None.
 
-		pid     — e.g. '0xA053'
-		max_age — return None if older than this (seconds)
+		identifier -- SER# (e.g. 'HQ2529K6QK4') or PID (e.g. '0xA060').
+		             SER# is preferred; PID is ambiguous when multiple
+		             devices share the same PID.
+		max_age    -- return None if older than this (seconds).
 		"""
 		if max_age is None:
 			max_age = self.device_timeout
 		with self._data_lock:
-			d = self._data.get(str(pid))
+			# 1. exact key match by SER#
+			d = self._data.get(str(identifier))
+			for v in self._data.values():
+				if v.get('SER#') == identifier:
+					d = v
+					break
+		# 2. search by SER# field
+		if d is None:
+			for v in self._data.values():
+				if v.get('SER#') == identifier:
+					d = v
+					break
 		if d is None:
 			return None
 		if max_age > 0 and time() - d.get('ts', 0) > max_age:
@@ -267,9 +295,14 @@ class VEDirect:
 		"""
 		return time() - self._last_alive < timeout
 
-	def pids(self, max_age=None):
-		"""Return set of currently active PIDs."""
+	def keys(self, max_age=None):
+		"""Return set of all active device keys (PID:SER# or PID)."""
 		return set(self.get_all(max_age=max_age).keys())
+
+	def ser_numbers(self, max_age=None):
+		"""Return list of SER# strings for all active devices."""
+		return [d.get('SER#', '') for d in self.get_all(max_age=max_age).values()
+		        if d.get('SER#')]
 
 	def combined(self, max_age=None):
 		"""
@@ -351,9 +384,10 @@ class VEDirect:
 		except Empty:
 			return None
 
-	def get_replies(self, timeout=3.0):
+	def get_replies(self, timeout=3.0, inter_reply=0.5):
 		"""
 		Collect all Reply objects received within timeout seconds.
+		After each reply, waits up to inter_reply seconds for more before stopping.
 		Returns list of Reply objects (may be empty).
 		"""
 		replies = []
@@ -362,8 +396,13 @@ class VEDirect:
 			r = self.get_reply(timeout=max(0, deadline - time()))
 			if r is None: break
 			replies.append(r)
-			if not self._reply_queue.empty(): continue
-			break
+			# wait briefly for additional replies (e.g. SET ALL sends one per device)
+			t_next = time() + inter_reply
+			while time() < t_next and time() < deadline:
+				r2 = self.get_reply(timeout=min(inter_reply, max(0, deadline - time())))
+				if r2 is None: break
+				replies.append(r2)
+				t_next = time() + inter_reply   # reset window on each new reply
 		return replies
 
 	def drain_replies(self):
@@ -448,9 +487,15 @@ class VEDirect:
 		except Exception:
 			return
 
-		# ALIVE keepalive from firmware — update connection timestamp, ignore otherwise
+		# ALIVE keepalive from firmware — update connection timestamp
 		if text == 'ALIVE':
 			self._last_alive = time()
+			return
+
+		# firmware identification reply
+		if text.startswith('READTEXT ') or text.startswith('SENDHEX '):
+			self._firmware = text
+			print(f'firmware: {text}')
 			return
 
 		# single-line replies from sendhex firmware
@@ -463,7 +508,7 @@ class VEDirect:
 		if block:
 			pid  = str(block.get('PID', ''))
 			ser  = str(block.get('SER#', ''))
-			key  = f'{pid}:{ser}' if ser else pid
+			key  = ser if ser else pid
 			block['ts'] = time()
 			with self._data_lock:
 				self._data[key] = block
