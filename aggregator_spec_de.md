@@ -1,6 +1,6 @@
 # VE.Direct Aggregator — Technische Spezifikation
 
-**Firmware · Arduino Mega 2560 / Teensy 4.1 · v1.6 · 2026**
+**Firmware · Arduino Mega 2560 / Teensy 4.1 · v2.0 · 2026**
 
 ---
 
@@ -12,7 +12,7 @@ Der VE.Direct Aggregator liest mehrere Victron VE.Direct-Geräte gleichzeitig au
 
 **Leistungssteuerung** (nur `readtext_sendhex`): ein bidirektionaler Befehlskanal ermöglicht das Begrenzen der Ladeleistung von MPPT-Reglern. Befehle werden durch Kaskaden geroutet, Antworten werden zurückgeleitet.
 
-**Vorgesehener Empfänger:** ein Linux-System (z.B. Raspberry Pi) das Geräte anhand von `PID` + `SER#` identifiziert. **Nicht kompatibel** mit Cerbo GX / Venus GX — diese erwarten ein Gerät pro VE.Direct-Port.
+**Vorgesehener Empfänger:** ein Linux-System (z.B. Raspberry Pi) das Geräte anhand von `SER#` identifiziert. **Nicht direkt kompatibel** mit Cerbo GX / Venus GX (diese erwarten ein Gerät pro VE.Direct-Port) -- aber mit `vedirect_deaggregator.py` nutzbar.
 
 ---
 
@@ -37,7 +37,7 @@ Alle Ports werden identisch behandelt — direkte Geräte und vorgelagerte Aggre
 
 ---
 
-## Baudratten-Konstanten
+## Baudraten-Konstanten
 
 | Konstante | Wert | Verwendung |
 |-----------|------|------------|
@@ -71,7 +71,7 @@ PID\t0xA060\r\n       ← nächster Block beginnt sofort
 
 **ALIVE-Signal:** `ALIVE\r\n` wird gesendet wenn `ALIVE_TIMEOUT` ms (Standard 10s) kein Block gesendet wurde. Signalisiert dass der MCU läuft aber keine Gerätedaten vorliegen.
 
-**Geräteidentifikation:** Empfänger müssen `PID` + `SER#` kombiniert verwenden. Mehrere Geräte gleichen Typs teilen dieselbe `PID`.
+**Geräteidentifikation:** Empfänger müssen `SER#` kombiniert verwenden. Mehrere Geräte gleichen Typs teilen dieselbe `PID`.
 
 **Zirkuläre TX-Queue:** fertige Blöcke werden sofort in eine Queue (12 Slots à 300 Bytes) eingereiht und der Eingangspuffer sofort freigegeben. Der Sender arbeitet die Queue nichtblockierend ab — kein Block geht durch Sendedruck verloren, auch bei gleichzeitigen Blöcken mehrerer Ports oder Bursts von Upstream-Aggregatoren.
 
@@ -81,7 +81,7 @@ PID\t0xA060\r\n       ← nächster Block beginnt sofort
 |-----------|-----------|---------|
 | `ve_aggregator` Python-Modul | ✓ | Vollständige Unterstützung |
 | Beliebiger VE.Direct-Parser | ✓ | Standardformat, ignoriert ALIVE |
-| Cerbo GX / Venus GX | ✗ | Erwartet ein Gerät pro Port |
+| Cerbo GX / Venus GX | via Deagg. | `vedirect_deaggregator.py` erforderlich |
 
 ---
 
@@ -103,9 +103,9 @@ MCUs können ohne Codeänderungen in Stern- oder Kaskadenform verbunden werden. 
 
 SET-Befehle auf dem Ausgangs-RX werden in VE.Direct HEX übersetzt und an den passenden MPPT-Regler gesendet. Nur der betroffene Port pausiert (~50–100 ms). Alle anderen Ports laufen weiter.
 
-### PID-Routing (readtext_sendhex)
+### Routing (readtext_sendhex)
 
-Jeder MCU lernt welcher Port für welche PID erreichbar ist (`MAX_ROUTES` = 12 pro Port). Bekannte PIDs werden direkt geroutet. Unbekannte PIDs werden auf allen Ports weitergeleitet. PIDs verfallen nach `PID_TIMEOUT` ms (Standard 10s).
+Jeder MCU lernt SER# und PID jedes direkt angeschlossenen Geräts aus den durchlaufenden Blocks. Befehle werden primär nach SER# geroutet, PID ist Fallback -- dadurch werden Geräte mit gleicher PID korrekt unterschieden. Fuer Upstream-/Kaskaden-Geräte wird zusaetzlich eine Route-Tabelle gepflegt (`MAX_ROUTES` = 12 pro Port) mit PIDs die auf dem jeweiligen Port ankommen. Unbekannte Identifier werden auf allen Ports weitergeleitet. Einträge verfallen nach `PID_TIMEOUT` ms (Standard 10s), SER# wird gleichzeitig gelöscht.
 
 ---
 
@@ -254,7 +254,7 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
 | Blockend-Erkennung | `Checksum\t`-Zeile | `Checksum\t`-Zeile |
 | TX-Queue | 12 Slots à 300 Bytes | 12 Slots à 300 Bytes |
 | HW UART RX-Buffer | 256 Bytes (~107ms) | 1024 Bytes (~427ms) |
-| Geräte-Schlüssel | `PID:SER#` | `PID:SER#` |
+| Geräte-Schlüssel | `SER#` | `SER#` |
 | ALIVE-Signal | nach `ALIVE_TIMEOUT` (10s) | nach `ALIVE_TIMEOUT` (10s) |
 | HEX-Busy-Scope | pro Port | pro Port |
 | RX-Puffer pro Port | 300 Bytes | 300 Bytes |
@@ -270,7 +270,7 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
 |-------|-------|
 | `ve_aggregator.py` | Client-Modul — Blöcke lesen, SET/HEX senden |
 | `mppt_read_example.py` | Daten anzeigen mit Intervall pro Gerät |
-| `block_monitor.py` | Block-Timing, Gap-Messung, Overlap-Vorhersage |
+| `block_monitor.py` | Block-Timing, Gap-Messung pro Gerät |
 | `sendhex_test.py` | SET/HEX Befehle testen |
 | `powerset_example.py` | Leistungsregelung mit Spannungsrampe |
 | `vedirect_simulator.py` | Upstream-Aggregator simulieren (N MPPTs auf einem Port) |
@@ -279,9 +279,55 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
 
 ## Einschränkungen
 
-- Mehrere Geräte gleichen Typs teilen dieselbe PID — Empfänger müssen `PID` + `SER#` kombinieren
+- Mehrere Geräte gleichen Typs teilen dieselbe PID — Empfänger müssen `SER#` kombinieren
 - `VBAT_FALLBACK` wird verwendet bis der erste Vbat-Wert empfangen wird
 - VE.Direct Pin 4 max. 10 mA — MCU muss extern versorgt werden
-- Cerbo GX / Venus GX nicht als direkter Empfänger nutzbar
+- Cerbo GX / Venus GX nicht direkt nutzbar -- mit `vedirect_deaggregator.py` aber voll integrierbar
 - Teensy 4.1: BSS138 an allen RX-Eingängen erforderlich (+ TX bei readtext_sendhex)
-- PIDs verfallen nach `PID_TIMEOUT` — Gerätewechsel werden innerhalb ~1s erkannt
+- Geräte (SER# + PID) verfallen nach `PID_TIMEOUT` -- Gerätewechsel werden innerhalb ~1s erkannt
+
+---
+
+## De-Aggregation und Venus OS / Cerbo GX
+
+Der aggregierte Stream kann mit `vedirect_deaggregator.py` wieder in einzelne
+virtuelle serielle Ports aufgeteilt werden. Jeder MPPT erscheint als eigener
+`/dev/pts/N` Port, den Venus OS und Cerbo GX als eigenständiges VE.Direct-Gerät
+einbinden können.
+
+Siehe `deaggregator_spec.md` für die Einrichtung.
+
+---
+
+## DS18B20 Temperatursensor (optional)
+
+Ein oder mehrere DS18B20 1-Wire-Sensoren koennen an einem einzigen Digital-Pin
+angeschlossen werden (`TEMP_PIN`, Standard D2). Jeder Sensor wird als
+Pseudo-VE.Direct-Block ausgegeben:
+
+```
+PID     0x9999
+SER#    TEMP-P2-S0
+FW      100
+TEMP    23.50
+Checksum  <byte>
+```
+
+Der De-Aggregator erstellt automatisch einen virtuellen Port pro Sensor.
+Venus OS sieht jeden Sensor als eigenstaendiges Geraet.
+
+**Verdrahtung (3-adrig, beliebig viele Sensoren an einem Pin):**
+- VCC -> 5V
+- GND -> GND
+- DATA -> TEMP_PIN, mit 4.7k Pull-up zwischen 5V und DATA
+
+**Konfiguration in der Firmware:**
+```c
+#define TEMP_ENABLE   1      // 0 = deaktiviert
+#define TEMP_PIN      2      // Digital-Pin fuer 1-Wire DATA
+#define TEMP_INTERVAL 5000   // Ausleseintervall in ms
+```
+
+Kein Sensor angeschlossen -> `temp_count = 0` -> keine Blocks, kein Overhead.
+
+**Benoetiste Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
