@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
+# powerset_example.py — v2.0
 #
 # VE.Direct Aggregator — powerset interface examples
 #
@@ -9,7 +10,7 @@
 from ve_aggregator import VEDirect
 from time import sleep, time
 
-PORT = '/dev/ttyUSB0'
+PORT = '/dev/ttyACM3'
 BAUD = 19200
 
 # ── basic set/hex usage ───────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ with VEDirect(PORT, BAUD, hysteresis_w=50) as vd:
 	sleep(2)
 	for _ in range(10):
 		sleep(1)
+		print(f'MCU alive: {vd.is_alive()}')
 		c    = vd.combined()
 		vbat = c.get('Vbat', 0)
 		ppv  = c.get('PPV',  0)
