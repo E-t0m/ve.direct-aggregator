@@ -88,7 +88,7 @@ def _check_checksum(raw_bytes):
 	return sum(raw_bytes) % 256 == 0
 
 
-def _parse_block(raw_bytes):
+def parse_block(raw_bytes):
 	"""
 	Parse a complete VE.Direct text block into a dict.
 	Returns dict with field names as keys, or None if block has no PID or invalid checksum.
@@ -170,7 +170,7 @@ class VEDirect:
 	Thread-safe: all public methods can be called from any thread.
 	"""
 
-	def __init__(self, port, baud=19200, hysteresis_w=50,
+	def __init__(self, port, baud=19200, on_block=None, hysteresis_w=50,
 	             device_timeout=5.0, pid_timeout=10.0):
 		"""
 		port           — serial device, e.g. '/dev/ttyUSB0'
@@ -195,6 +195,7 @@ class VEDirect:
 		self._last_sent  = {}        # {ser: (watts, timestamp)}
 		self._last_alive = 0.0       # timestamp of last ALIVE signal or data block
 		self._firmware   = None      # firmware identification string (from WHO response)
+		self._on_block   = on_block  # optional callback(ser, fields) per block
 
 		self._stop       = Event()
 		self._ser        = None
@@ -329,48 +330,48 @@ class VEDirect:
 
 	# ── command interface (readtext_sendhex firmware only) ────────────────────
 
-	def set_watts(self, pid, watts):
+	def set_watts(self, ser, watts):
 		"""
 		Limit charge power of an MPPT charger.
 
-		pid   — PID string, e.g. '0xA053', or 'ALL'
-		watts — target watts (int >= 0). 0 stops charging.
+		ser   -- SER# string, e.g. 'HQ2529K6QK4', or 'ALL'
+		watts -- target watts (int >= 0). 0 stops charging.
 
 		Applies hysteresis: command is suppressed if value changed by
 		less than self.hysteresis_w since last sent value.
 		Replies are queued and readable via get_reply() / get_replies().
 		"""
-		pid   = str(pid).upper() if pid == 'ALL' else str(pid)
+		ser   = 'ALL' if str(ser).upper() == 'ALL' else str(ser)
 		watts = max(0, int(watts))
 
 		# hysteresis check
-		last = self._last_sent.get(pid)
+		last = self._last_sent.get(ser)
 		if last is not None:
 			last_w, last_t = last
 			if (abs(watts - last_w) < self.hysteresis_w and
 				time() - last_t < self.pid_timeout):
 				return
 
-		self._last_sent[pid] = (watts, time())
-		self._cmd_queue.put(f'SET {pid} {watts}\n')
+		self._last_sent[ser] = (watts, time())
+		self._cmd_queue.put(f'SET {ser} {watts}\n')
 
-	def hex_cmd(self, pid, hex_str):
+	def hex_cmd(self, ser, hex_str):
 		"""
 		Send arbitrary VE.Direct HEX string to a device.
 
-		pid     — PID string or 'ALL'
-		hex_str — HEX command, e.g. ':154' or ':154\n'
+		ser     -- SER# string or 'ALL'
+		hex_str -- HEX command, e.g. ':154' or ':154\n'
 
 		No hysteresis. Replies readable via get_reply() / get_replies().
-		The host is responsible for restoring text mode after HEX commands.
+		Devices return to text mode on their own after HEX commands.
 		"""
-		pid     = str(pid).upper() if pid == 'ALL' else str(pid)
+		ser     = 'ALL' if str(ser).upper() == 'ALL' else str(ser)
 		hex_str = hex_str.strip()
-		self._cmd_queue.put(f'HEX {pid} {hex_str}\n')
+		self._cmd_queue.put(f'HEX {ser} {hex_str}\n')
 
-	def restore_text_mode(self, pid='ALL'):
-		"""Send :154 to restore VE.Direct text mode on device(s)."""
-		self.hex_cmd(pid, ':154')
+	def restore_text_mode(self, ser='ALL'):
+		"""Send :154 to device(s) -- only needed if explicitly requested."""
+		self.hex_cmd(ser, ':154')
 
 	# ── reply interface ───────────────────────────────────────────────────────
 
@@ -504,7 +505,7 @@ class VEDirect:
 			return
 
 		# VE.Direct data block
-		block = _parse_block(raw)
+		block = parse_block(raw)
 		if block:
 			pid  = str(block.get('PID', ''))
 			ser  = str(block.get('SER#', ''))
@@ -512,6 +513,8 @@ class VEDirect:
 			block['ts'] = time()
 			with self._data_lock:
 				self._data[key] = block
+			if self._on_block and ser:
+				self._on_block(ser, dict(block))
 			self._last_alive = time()
 
 	def _sender(self):
