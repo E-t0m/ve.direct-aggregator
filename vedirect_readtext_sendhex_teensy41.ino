@@ -314,9 +314,9 @@ void process_cmd(char* line) {
 	if (!is_set && !is_hex) return;
 
 	char* p = line + 4;
-	char pid_str[20]; int ti = 0;
-	while (*p && *p != ' ' && ti < 19) pid_str[ti++] = *p++;
-	pid_str[ti] = '\0';
+	char ser_str[20]; int ti = 0;
+	while (*p && *p != ' ' && ti < 19) ser_str[ti++] = *p++;
+	ser_str[ti] = '\0';
 	if (*p == ' ') p++;
 
 	// expire PIDs not seen for 10s ? allows device swap without restart
@@ -328,7 +328,7 @@ void process_cmd(char* line) {
 		}
 	}
 
-	bool is_all = (strcmp(pid_str, "ALL") == 0);
+	bool is_all = (strcmp(ser_str, "ALL") == 0);
 	if (is_hex) {
 		if (is_all) {
 			for (int i = 0; i < N; i++)
@@ -339,13 +339,13 @@ void process_cmd(char* line) {
 			bool found = false;
 			for (int i = 0; i < N; i++) {
 				if (dev_known[i] &&
-					strcmp(known_ser[i], pid_str) == 0) {
+					strcmp(known_ser[i], ser_str) == 0) {
 					exec_hex(i, p); found = true; break;
 				}
 			}
 			if (!found) {
-				int route = route_find(pid_str);
-				char fwd[CMD_BUF_SIZE + 32]; snprintf(fwd, sizeof(fwd), "HEX %s %s", pid_str, p);
+				int route = route_find(ser_str);
+				char fwd[CMD_BUF_SIZE + 32]; snprintf(fwd, sizeof(fwd), "HEX %s %s", ser_str, p);
 				if (route >= 0) { ports[route]->print(fwd); ports[route]->print('\n'); }
 				else forward_all(fwd);
 			}
@@ -402,13 +402,13 @@ void process_cmd(char* line) {
 		bool found = false;
 		for (int i = 0; i < N; i++) {
 			if (dev_known[i] &&
-				strcmp(known_ser[i], pid_str) == 0) {
+				strcmp(known_ser[i], ser_str) == 0) {
 				exec_set(i, watts); found = true; break;
 			}
 		}
 		if (!found) {
-			char fwd[CMD_BUF_SIZE + 32]; snprintf(fwd, sizeof(fwd), "SET %s %lu", pid_str, watts);
-			int route = route_find(pid_str);
+			char fwd[CMD_BUF_SIZE + 32]; snprintf(fwd, sizeof(fwd), "SET %s %lu", ser_str, watts);
+			int route = route_find(ser_str);
 			if (route >= 0) { ports[route]->print(fwd); ports[route]->print('\n'); }
 			else forward_all(fwd);
 		}
