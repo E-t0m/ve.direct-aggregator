@@ -105,7 +105,7 @@ SET-Befehle auf dem Ausgangs-RX werden in VE.Direct HEX übersetzt und an den pa
 
 ### Routing (readtext_sendhex)
 
-Jeder MCU lernt SER# und PID jedes direkt angeschlossenen Geräts aus den durchlaufenden Blocks. Befehle werden primär nach SER# geroutet, PID ist Fallback -- dadurch werden Geräte mit gleicher PID korrekt unterschieden. Fuer Upstream-/Kaskaden-Geräte wird zusaetzlich eine Route-Tabelle gepflegt (`MAX_ROUTES` = 12 pro Port) mit PIDs die auf dem jeweiligen Port ankommen. Unbekannte Identifier werden auf allen Ports weitergeleitet. Einträge verfallen nach `PID_TIMEOUT` ms (Standard 10s), SER# wird gleichzeitig gelöscht.
+Jeder MCU lernt SER# und PID jedes direkt angeschlossenen Geräts aus den durchlaufenden Blocks. Befehle werden primär nach SER# geroutet, PID ist Fallback -- dadurch werden Geräte mit gleicher PID korrekt unterschieden. Für Upstream-/Kaskaden-Geräte wird zusätzlich eine Route-Tabelle gepflegt (`MAX_ROUTES` = 12 pro Port) mit PIDs die auf dem jeweiligen Port ankommen. Unbekannte Identifier werden auf allen Ports weitergeleitet. Einträge verfallen nach `PID_TIMEOUT` ms (Standard 10s), SER# wird gleichzeitig gelöscht.
 
 ---
 
@@ -297,11 +297,43 @@ einbinden können.
 
 Siehe `deaggregator_spec.md` für die Einrichtung.
 
+
+### WHO / Firmware-Identifikation
+
+Bei Empfang von `WHO\n` antwortet die Firmware mit:
+
+```
+READTEXT Mega2560 N=3\n
+READTEXT Teensy41 N=7\n
+SENDHEX Mega2560 N=3\n    (readtext_sendhex Variante)
+SENDHEX Teensy41 N=7\n
+```
+
+`ve_aggregator.py` sendet `WHO\n` automatisch 1s nach Verbindungsaufbau
+und gibt `firmware: <Antwort>` aus. So erkennt der Host welche
+Firmware-Variante und Portanzahl aktiv ist.
+
+### RESET-Kommando
+
+Alle Firmware-Varianten reagieren auf `RESET\n`:
+
+1. `RESET\n` an alle nachgelagerten Ports weiterleiten (`forward_all`)
+2. 50ms warten bis die Übertragung abgeschlossen ist
+3. Watchdog-Reset auslösen -- MCU startet innerhalb von 15ms neu
+
+Das Kommando propagiert durch die gesamte Kaskade. Senden von beliebigem Host:
+
+```bash
+echo "RESET" > /dev/ttyACM3
+# oder über RS-485:
+echo "RESET" > /dev/ttyUSB0
+```
+
 ---
 
 ## DS18B20 Temperatursensor (optional)
 
-Ein oder mehrere DS18B20 1-Wire-Sensoren koennen an einem einzigen Digital-Pin
+Ein oder mehrere DS18B20 1-Wire-Sensoren können an einem einzigen Digital-Pin
 angeschlossen werden (`TEMP_PIN`, Standard D2). Jeder Sensor wird als
 Pseudo-VE.Direct-Block ausgegeben:
 
@@ -314,7 +346,7 @@ Checksum  <byte>
 ```
 
 Der De-Aggregator erstellt automatisch einen virtuellen Port pro Sensor.
-Venus OS sieht jeden Sensor als eigenstaendiges Geraet.
+Venus OS sieht jeden Sensor als eigenständiges Gerät.
 
 **Verdrahtung (3-adrig, beliebig viele Sensoren an einem Pin):**
 - VCC -> 5V
@@ -324,10 +356,52 @@ Venus OS sieht jeden Sensor als eigenstaendiges Geraet.
 **Konfiguration in der Firmware:**
 ```c
 #define TEMP_ENABLE   1      // 0 = deaktiviert
-#define TEMP_PIN      2      // Digital-Pin fuer 1-Wire DATA
+#define TEMP_PIN      2      // Digital-Pin für 1-Wire DATA
 #define TEMP_INTERVAL 5000   // Ausleseintervall in ms
 ```
 
 Kein Sensor angeschlossen -> `temp_count = 0` -> keine Blocks, kein Overhead.
 
-**Benoetiste Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
+**Benötigte Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
+
+### Remote-Firmware-Update über RS-485
+
+Der Mega kann ohne Ausbau aus der Installation aktualisiert werden:
+
+1. `avrdude` auf dem RPi starten -- über die bestehende Verbindung (USB oder RS-485):
+
+```bash
+avrdude -p atmega2560 -c arduino -P /dev/ttyUSB0 -b 115200 \
+        -U flash:w:firmware.hex:i
+```
+
+2. Während `avrdude` läuft den Reset-Knopf am Mega drücken
+
+`avrdude` versucht ~10 Sekunden lang zu verbinden -- der Reset-Knopf kann
+jederzeit in diesem Fenster gedrückt werden. Der Bootloader startet und
+`avrdude` flasht die neue Firmware automatisch.
+
+Mit dem `RESET`-Kommando (readtext_sendhex Firmware) kann Schritt 3
+automatisiert werden -- der RPi sendet `RESET\n` und löst den Bootloader
+ohne physischen Zugang aus.
+
+---
+
+## Hardware De-Aggregator (alternativer Ansatz)
+
+Für Installationen ohne Linux-Host implementiert das
+[pico_vedirect](https://github.com/E-t0m/ve.direct-aggregator/tree/main/hardware_deagg) Projekt
+die De-Aggregation direkt in Hardware: ein oder mehrere Raspberry Pi
+Pico Boards hängen am RS-485-Bus mit dem aggregierten Stream, trennen
+eingehende Blöcke nach `SER#` und stellen jedes Gerät als eigenständigen
+CDC-ACM seriellen Port direkt am Cerbo GX per USB bereit.
+
+Mehrere Picos organisieren sich selbst am selben Bus (Cluster-Koordination
+über Frames in den Inter-Block-Pausen) und skalieren über das 7-Port-Limit
+eines einzelnen Pico hinaus. Der Ansatz ist read-only -- HEX-Befehle von
+Venus OS werden verworfen, der VE.Direct-Treiber fällt automatisch in den
+Text-Modus zurück.
+
+Diesen Ansatz nutzen wenn kein RPi/Linux-Host zwischen Aggregator und
+Cerbo GX verfügbar ist. `vedirect_deaggregator.py` (dieses Repo) nutzen
+wenn bereits ein Linux-Host in der Kette vorhanden ist.
