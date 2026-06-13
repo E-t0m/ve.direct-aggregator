@@ -46,11 +46,10 @@ individual virtual serial ports for Venus OS / Cerbo GX.
 
 VERSION = '2.0'
 
-from serial      import Serial, SerialException
+from serial      import Serial
 from threading   import Thread, Event, Lock
 from queue       import Queue, Empty
 from time        import time, sleep
-from collections import defaultdict
 
 
 # ── VE.Direct field conversion ────────────────────────────────────────────────
@@ -170,7 +169,7 @@ class VEDirect:
 	Thread-safe: all public methods can be called from any thread.
 	"""
 
-	def __init__(self, port, baud=19200, on_block=None, hysteresis_w=50,
+	def __init__(self, port, baud=19200, on_block=None, on_alive=None, hysteresis_w=50,
 	             device_timeout=5.0, pid_timeout=10.0):
 		"""
 		port           — serial device, e.g. '/dev/ttyUSB0'
@@ -196,6 +195,7 @@ class VEDirect:
 		self._last_alive = 0.0       # timestamp of last ALIVE signal or data block
 		self._firmware   = None      # firmware identification string (from WHO response)
 		self._on_block   = on_block  # optional callback(ser, fields) per block
+		self._on_alive   = on_alive  # optional callback() on each ALIVE keepalive
 
 		self._stop       = Event()
 		self._ser        = None
@@ -459,6 +459,7 @@ class VEDirect:
 					line_buf.clear()
 					if line == 'ALIVE':
 						self._last_alive = time()
+						if self._on_alive: self._on_alive()
 						buf.clear()
 						continue
 					if line.startswith(('OK ', 'ERR ', 'HEX_REPLY ')):
@@ -491,6 +492,7 @@ class VEDirect:
 		# ALIVE keepalive from firmware — update connection timestamp
 		if text == 'ALIVE':
 			self._last_alive = time()
+			if self._on_alive: self._on_alive()
 			return
 
 		# firmware identification reply
@@ -554,7 +556,6 @@ def iter_devices(data):
 # ── example ───────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-	from time import sleep
 
 	PORT = '/dev/ttyACM3'
 
