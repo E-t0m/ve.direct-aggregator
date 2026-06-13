@@ -180,6 +180,38 @@ port, which Venus OS and Cerbo GX can register as separate VE.Direct devices.
 
 See `deaggregator_spec.md` for setup details.
 
+
+### WHO / firmware identification
+
+On receipt of `WHO\n` the firmware responds with:
+
+```
+READTEXT Mega2560 N=3\n
+READTEXT Teensy41 N=7\n
+SENDHEX Mega2560 N=3\n    (readtext_sendhex variant)
+SENDHEX Teensy41 N=7\n
+```
+
+`ve_aggregator.py` sends `WHO\n` automatically 1s after connecting and
+prints `firmware: <response>`. This allows the host to detect which
+firmware variant and port count is active.
+
+### RESET command
+
+All firmware variants respond to `RESET\n`:
+
+1. Forward `RESET\n` to all downstream ports (`forward_all`)
+2. Wait 50ms for transmission to complete
+3. Trigger watchdog reset -- MCU restarts within 15ms
+
+This propagates through the entire cascade. Send from any host:
+
+```bash
+echo "RESET" > /dev/ttyACM3
+# or via RS-485:
+echo "RESET" > /dev/ttyUSB0
+```
+
 ---
 
 ## DS18B20 Temperature Sensor (optional)
