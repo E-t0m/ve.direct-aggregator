@@ -199,3 +199,23 @@ Venus OS sees them as independent devices.
 No sensor connected -> `temp_count = 0` -> no blocks emitted, no overhead.
 
 **Required libraries:** OneWire + DallasTemperature (Arduino Library Manager).
+
+---
+
+## Hardware De-Aggregator (alternative approach)
+
+For installations without a Linux host, the
+[pico_vedirect](https://github.com/E-t0m/ve.direct-aggregator/tree/main/hardware_deagg) project
+implements de-aggregation directly in hardware: one or more Raspberry Pi
+Pico boards sit on the RS-485 bus carrying the aggregated stream, split
+incoming blocks by `SER#`, and present each device as an independent
+CDC-ACM serial port directly to the Cerbo GX via USB.
+
+Multiple Picos self-organize on the same bus (cluster coordination via
+idle-gap frames), scaling beyond the 7-port limit of a single Pico. This
+is a read-only approach -- HEX commands from Venus OS are discarded, and
+the VE.Direct driver falls back to text mode automatically.
+
+Use this approach when no RPi/Linux host is available between the
+aggregator and the Cerbo GX. Use `vedirect_deaggregator.py` (this repo)
+when a Linux host is already in the chain.
