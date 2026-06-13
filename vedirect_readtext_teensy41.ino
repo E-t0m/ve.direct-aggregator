@@ -4,6 +4,7 @@
 // into one aggregated stream on Serial8 TX or SerialUSB (19200 baud).
 //
 // Complete blocks are forwarded immediately; HEX frames stripped.
+// Responds to RESET\n by propagating downstream then resetting MCU.
 // Responds to WHO\n with READTEXT Teensy41 N=<N>\n
 // Sends ALIVE\r\n every 10s when idle.
 //
@@ -37,6 +38,7 @@
 #define TEMP_INTERVAL   5000UL
 
 #if TEMP_ENABLE
+#include <avr/wdt.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);
@@ -187,17 +189,31 @@ void send_alive() {
 	}
 }
 
+
+void forward_all(const char* msg) {
+	for (int i = 0; i < N; i++) {
+		ports[i]->print(msg);
+		ports[i]->print('\n');
+	}
+}
+
 void read_cmd() {
-	static char buf[16];
+	static char buf[8];
 	static int  len = 0;
 	while (Serial.available()) {
 		char c = Serial.read();
 		if (c == '\n' || c == '\r') {
 			buf[len] = '\0';
+			if (strcmp(buf, "RESET") == 0) {
+				forward_all("RESET");
+				delay(50);
+				wdt_enable(WDTO_15MS);
+				while(1);
+			}
 			if (strcmp(buf, "WHO") == 0)
 				SEROUT.print("READTEXT Teensy41 N=" + String(N) + "\n");
 			len = 0;
-		} else if (len < 15) {
+		} else if (len < 7) {
 			buf[len++] = c;
 		}
 	}

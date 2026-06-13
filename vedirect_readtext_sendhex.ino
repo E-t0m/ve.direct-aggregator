@@ -10,6 +10,7 @@
 // Commands:
 //   SET <SER#|PID|ALL> <watts>\n  -> OK/ERR per device on Serial0 TX
 //   HEX <SER#|PID|ALL> <hexstr>\n -> HEX_REPLY/ERR per device on Serial0 TX
+//   RESET\n                        -> propagate to downstream, then reset MCU
 //   WHO\n                          -> READTEXT Mega2560 N=<N>\n
 //
 // Routing: SER# primary, PID fallback, cascade route table for upstream
@@ -49,6 +50,7 @@
 #define TEMP_INTERVAL   5000UL   // read interval in ms (DS18B20 needs ~750ms per conversion)
 
 #if TEMP_ENABLE
+#include <avr/wdt.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);
@@ -296,6 +298,12 @@ void forward_all(const char* fwd) {
 }
 
 void process_cmd(char* line) {
+	if (strcmp(line, "RESET") == 0) {
+		forward_all("RESET");   // propagate to all downstream devices
+		delay(50);              // let transmission complete
+		wdt_enable(WDTO_15MS);
+		while(1);               // watchdog fires and resets MCU
+	}
 	if (strcmp(line, "WHO") == 0) {
 		Serial.print("SENDHEX Mega2560 N=");
 		Serial.print(N);
@@ -557,7 +565,7 @@ void send_temp_blocks() {
 
 		// compute VE.Direct checksum: sum of all bytes (incl Checksum line)
 		// must equal 0 mod 256
-		// "Checksum\t" + cs_byte + "\r\n" — cs_byte chosen so total = 0
+		// "Checksum\t" + cs_byte + "\r\n" -- cs_byte chosen so total = 0
 		uint8_t sum = 0;
 		for (int i = 0; i < pos; i++) sum += (uint8_t)blk[i];
 		// add the fixed bytes of "Checksum\t" (9 chars) + "\r\n" (2 chars)

@@ -41,6 +41,7 @@
 #define TEMP_INTERVAL   5000UL
 
 #if TEMP_ENABLE
+#include <avr/wdt.h>   // for watchdog reset
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);
@@ -303,6 +304,12 @@ void forward_all(const char* fwd) {
 }
 
 void process_cmd(char* line) {
+	if (strcmp(line, "RESET") == 0) {
+		forward_all("RESET");   // propagate to all downstream devices
+		delay(50);              // let transmission complete
+		wdt_enable(WDTO_15MS);
+		while(1);               // watchdog fires and resets MCU
+	}
 	if (strcmp(line, "WHO") == 0) {
 		SEROUT.print("SENDHEX Teensy41 N=");
 		SEROUT.print(N);
