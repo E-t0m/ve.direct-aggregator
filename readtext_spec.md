@@ -200,6 +200,23 @@ port, which Venus OS and Cerbo GX can register as separate VE.Direct devices.
 
 See `deaggregator_spec.md` for setup details.
 
+
+### RESET command
+
+All firmware variants respond to `RESET\n`:
+
+1. Forward `RESET\n` to all downstream ports (`forward_all`)
+2. Wait 50ms for transmission to complete
+3. Trigger watchdog reset -- MCU restarts within 15ms
+
+This propagates through the entire cascade. Send from any host:
+
+```bash
+echo "RESET" > /dev/ttyACM3
+# or via RS-485:
+echo "RESET" > /dev/ttyUSB0
+```
+
 ---
 
 ## DS18B20 Temperature Sensor (optional)
@@ -233,3 +250,24 @@ Venus OS sees them as independent devices.
 No sensor connected -> `temp_count = 0` -> no blocks emitted, no overhead.
 
 **Required libraries:** OneWire + DallasTemperature (Arduino Library Manager).
+
+### Remote Firmware Update via RS-485
+
+The Mega can be updated without removal from the installation:
+
+1. Start `avrdude` on the RPi using the existing connection (USB or RS-485):
+
+```bash
+avrdude -p atmega2560 -c arduino -P /dev/ttyUSB0 -b 115200 \
+        -U flash:w:firmware.hex:i
+```
+
+2. Press the physical Reset button on the Mega while `avrdude` is running
+
+`avrdude` retries for ~10 seconds -- the Reset button can be pressed at any
+point during that window. The bootloader starts and `avrdude` flashes the
+new firmware automatically.
+
+With the `RESET` command (readtext_sendhex firmware), step 3 can be
+automated -- the RPi sends `RESET\n` to trigger the bootloader without
+physical access.
