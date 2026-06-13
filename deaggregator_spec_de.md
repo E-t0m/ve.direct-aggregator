@@ -135,9 +135,9 @@ Der De-Aggregator nutzt dieselbe `_parse_block` Logik wie `ve_aggregator.py`.
 ## Einschränkungen
 
 - **Rückwärtiges SET/HEX Routing:** Nicht implementiert. Der De-Aggregator
-  leitet Befehle von Venus OS nicht an den Aggregator weiter. Technisch moeglich
-  -- jeder virtuelle Port-Master-FD koennte auf eingehende Schreibzugriffe
-  ueberwacht und als `SET <SER#>` / `HEX <SER#>` Befehl weitergeleitet werden.
+  leitet Befehle von Venus OS nicht an den Aggregator weiter. Technisch möglich
+  -- jeder virtuelle Port-Master-FD könnte auf eingehende Schreibzugriffe
+  überwacht und als `SET <SER#>` / `HEX <SER#>` Befehl weitergeleitet werden.
 
 - **Virtuelle Ports nicht persistent:** `/dev/pts/N` ändert sich bei
   jedem Start. Symlinks oder udev-Regeln für persistente Pfade verwenden.
@@ -204,7 +204,7 @@ Venus OS sieht jeden Sensor als eigenständiges Gerät.
 
 Kein Sensor angeschlossen -> `temp_count = 0` -> keine Blocks, kein Overhead.
 
-**Benoetiste Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
+**Benötigte Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
 
 ---
 
@@ -221,8 +221,23 @@ Mehrere Picos organisieren sich selbst am selben Bus (Cluster-Koordination
 über Frames in den Inter-Block-Pausen) und skalieren über das 7-Port-Limit
 eines einzelnen Pico hinaus. Der Ansatz ist read-only -- HEX-Befehle von
 Venus OS werden verworfen, der VE.Direct-Treiber fällt automatisch in den
-Text-Modus zurueck.
+Text-Modus zurück.
 
 Diesen Ansatz nutzen wenn kein RPi/Linux-Host zwischen Aggregator und
 Cerbo GX verfügbar ist. `vedirect_deaggregator.py` (dieses Repo) nutzen
 wenn bereits ein Linux-Host in der Kette vorhanden ist.
+
+### WHO / Firmware-Identifikation
+
+Bei Empfang von `WHO\n` antwortet die Firmware mit:
+
+```
+READTEXT Mega2560 N=3\n
+READTEXT Teensy41 N=7\n
+SENDHEX Mega2560 N=3\n    (readtext_sendhex Variante)
+SENDHEX Teensy41 N=7\n
+```
+
+`ve_aggregator.py` sendet `WHO\n` automatisch 1s nach Verbindungsaufbau
+und gibt `firmware: <Antwort>` aus. So erkennt der Host welche
+Firmware-Variante und Portanzahl aktiv ist.
