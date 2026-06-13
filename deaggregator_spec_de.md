@@ -175,7 +175,7 @@ Leistungsdaten, Fehler und Statistiken einzeln überwachen.
 
 ## DS18B20 Temperatursensor (optional)
 
-Ein oder mehrere DS18B20 1-Wire-Sensoren koennen an einem einzigen Digital-Pin
+Ein oder mehrere DS18B20 1-Wire-Sensoren können an einem einzigen Digital-Pin
 angeschlossen werden (`TEMP_PIN`, Standard D2). Jeder Sensor wird als
 Pseudo-VE.Direct-Block ausgegeben:
 
@@ -188,7 +188,7 @@ Checksum  <byte>
 ```
 
 Der De-Aggregator erstellt automatisch einen virtuellen Port pro Sensor.
-Venus OS sieht jeden Sensor als eigenstaendiges Geraet.
+Venus OS sieht jeden Sensor als eigenständiges Gerät.
 
 **Verdrahtung (3-adrig, beliebig viele Sensoren an einem Pin):**
 - VCC -> 5V
@@ -198,10 +198,31 @@ Venus OS sieht jeden Sensor als eigenstaendiges Geraet.
 **Konfiguration in der Firmware:**
 ```c
 #define TEMP_ENABLE   1      // 0 = deaktiviert
-#define TEMP_PIN      2      // Digital-Pin fuer 1-Wire DATA
+#define TEMP_PIN      2      // Digital-Pin für 1-Wire DATA
 #define TEMP_INTERVAL 5000   // Ausleseintervall in ms
 ```
 
 Kein Sensor angeschlossen -> `temp_count = 0` -> keine Blocks, kein Overhead.
 
 **Benoetiste Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
+
+---
+
+## Hardware De-Aggregator (alternativer Ansatz)
+
+Für Installationen ohne Linux-Host implementiert das
+[pico_vedirect](https://github.com/E-t0m/ve.direct-aggregator/tree/main/hardware_deagg) Projekt
+die De-Aggregation direkt in Hardware: ein oder mehrere Raspberry Pi
+Pico Boards hängen am RS-485-Bus mit dem aggregierten Stream, trennen
+eingehende Blöcke nach `SER#` und stellen jedes Gerät als eigenständigen
+CDC-ACM seriellen Port direkt am Cerbo GX per USB bereit.
+
+Mehrere Picos organisieren sich selbst am selben Bus (Cluster-Koordination
+über Frames in den Inter-Block-Pausen) und skalieren über das 7-Port-Limit
+eines einzelnen Pico hinaus. Der Ansatz ist read-only -- HEX-Befehle von
+Venus OS werden verworfen, der VE.Direct-Treiber fällt automatisch in den
+Text-Modus zurueck.
+
+Diesen Ansatz nutzen wenn kein RPi/Linux-Host zwischen Aggregator und
+Cerbo GX verfügbar ist. `vedirect_deaggregator.py` (dieses Repo) nutzen
+wenn bereits ein Linux-Host in der Kette vorhanden ist.
