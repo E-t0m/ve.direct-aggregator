@@ -530,9 +530,14 @@ void setup() {
 	temp_sensors.begin();
 	temp_count = temp_sensors.getDeviceCount();
 	temp_sensors.setResolution(12);   // 12-bit = 0.0625 deg C resolution
-	temp_sensors.setWaitForConversion(false);
-	temp_sensors.requestTemperatures();
-	temp_last = millis();
+	if (temp_count > 0) {
+		// first conversion: wait blocking so getTempCByIndex() returns a
+		// valid value immediately rather than NaN/garbage on the first read
+		temp_sensors.setWaitForConversion(true);
+		temp_sensors.requestTemperatures();
+		temp_sensors.setWaitForConversion(false);
+	}
+	temp_last = millis() - TEMP_INTERVAL;   // force immediate first send_temp_blocks
 #endif
 }
 
@@ -553,7 +558,10 @@ void send_temp_blocks() {
 		// SER# encodes pin and sensor index: TEMP-P2-S0, TEMP-P2-S1, ...
 		char ser[24], tmp[16];
 		sprintf(ser, "TEMP-P%d-S%d", TEMP_PIN, s);
-		sprintf(tmp, "%.2f", t);
+		// manual float formatting -- avoid sprintf %f (often unsupported on AVR)
+		int t_whole = (int)t;
+		int t_frac  = abs((int)((t - t_whole) * 100));
+		sprintf(tmp, "%d.%02d", t_whole, t_frac);
 
 		// build block in a local buffer
 		char blk[256];

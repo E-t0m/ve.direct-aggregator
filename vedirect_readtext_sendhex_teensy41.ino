@@ -561,9 +561,12 @@ void setup() {
 	temp_sensors.begin();
 	temp_count = temp_sensors.getDeviceCount();
 	temp_sensors.setResolution(12);
-	temp_sensors.setWaitForConversion(false);
-	temp_sensors.requestTemperatures();
-	temp_last = millis();
+	if (temp_count > 0) {
+		temp_sensors.setWaitForConversion(true);
+		temp_sensors.requestTemperatures();
+		temp_sensors.setWaitForConversion(false);
+	}
+	temp_last = millis() - TEMP_INTERVAL;
 #endif
 }
 
@@ -577,7 +580,10 @@ void send_temp_blocks() {
 		if (t == DEVICE_DISCONNECTED_C) continue;
 		char ser[24], tmp[16];
 		sprintf(ser, "TEMP-P%d-S%d", TEMP_PIN, s);
-		sprintf(tmp, "%.2f", t);
+		// manual float formatting -- avoid sprintf %f (often unsupported on AVR)
+		int t_whole = (int)t;
+		int t_frac  = abs((int)((t - t_whole) * 100));
+		sprintf(tmp, "%d.%02d", t_whole, t_frac);
 		char blk[256];
 		int  pos = 0;
 		pos += sprintf(blk + pos, "PID\t0x9999\r\n");
