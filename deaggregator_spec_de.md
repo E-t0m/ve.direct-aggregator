@@ -190,6 +190,12 @@ Checksum  <byte>
 Der De-Aggregator erstellt automatisch einen virtuellen Port pro Sensor.
 Venus OS sieht jeden Sensor als eigenständiges Gerät.
 
+Sensoren werden über ihre feste 64-Bit-Werksadresse identifiziert, die
+einmalig beim Start aufgelöst und dem Slot `S0`, `S1`, ... zugeordnet wird
+-- nicht über den internen Scan-Index der Library. So bleibt jede `SER#`
+an denselben physischen Sensor gebunden, auch wenn eine Messung gegenüber
+den anderen Sensoren am selben Bus verzögert eintrifft.
+
 **Verdrahtung (3-adrig, beliebig viele Sensoren an einem Pin):**
 - VCC -> 5V
 - GND -> GND
@@ -203,6 +209,7 @@ Venus OS sieht jeden Sensor als eigenständiges Gerät.
 ```
 
 Kein Sensor angeschlossen -> `temp_count = 0` -> keine Blocks, kein Overhead.
+Bis zu `MAX_TEMP_SENSORS` (Standard 8) Sensoren pro Pin werden unterstützt.
 
 **Benötigte Libraries:** OneWire + DallasTemperature (Arduino Library Manager).
 

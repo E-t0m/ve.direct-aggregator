@@ -184,6 +184,11 @@ Checksum  <byte>
 The de-aggregator creates a virtual port for each sensor automatically.
 Venus OS sees them as independent devices.
 
+Sensors are identified by their fixed 64-bit factory address, resolved
+once at boot and mapped to the `S0`, `S1`, ... slot -- not by the library's
+internal scan index. This keeps each `SER#` bound to the same physical
+sensor even if a reading is delayed relative to the others on the same bus.
+
 **Wiring (3-wire, any number of sensors on one pin):**
 - VCC -> 5V
 - GND -> GND
@@ -197,6 +202,7 @@ Venus OS sees them as independent devices.
 ```
 
 No sensor connected -> `temp_count = 0` -> no blocks emitted, no overhead.
+Up to `MAX_TEMP_SENSORS` (default 8) sensors per pin are supported.
 
 **Required libraries:** OneWire + DallasTemperature (Arduino Library Manager).
 
@@ -219,3 +225,18 @@ the VE.Direct driver falls back to text mode automatically.
 Use this approach when no RPi/Linux host is available between the
 aggregator and the Cerbo GX. Use `vedirect_deaggregator.py` (this repo)
 when a Linux host is already in the chain.
+
+### WHO / firmware identification
+
+On receipt of `WHO\n` the firmware responds with:
+
+```
+READTEXT Mega2560 N=3\n
+READTEXT Teensy41 N=7\n
+SENDHEX Mega2560 N=3\n    (readtext_sendhex variant)
+SENDHEX Teensy41 N=7\n
+```
+
+`ve_aggregator.py` sends `WHO\n` automatically 1s after connecting and
+prints `firmware: <response>`. This allows the host to detect which
+firmware variant and port count is active.
