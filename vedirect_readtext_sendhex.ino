@@ -45,6 +45,9 @@
 // DS18B20 1-Wire temperature sensor
 // Set TEMP_PIN to the digital pin the DATA line is connected to.
 // Set TEMP_ENABLE to 0 to disable temperature sensing entirely.
+// Sensors are read by their fixed 64-bit address (resolved once at
+// boot), not by library index -- this avoids a rare mix-up where two
+// sensors on the same bus swap readings for a single cycle.
 #define TEMP_ENABLE     1
 #define TEMP_PIN        2
 #define TEMP_INTERVAL   5000UL   // read interval in ms (DS18B20 needs ~750ms per conversion)
@@ -57,6 +60,8 @@ OneWire            temp_wire(TEMP_PIN);
 DallasTemperature  temp_sensors(&temp_wire);
 unsigned long      temp_last  = 0;
 int                temp_count = 0;   // number of sensors found
+#define MAX_TEMP_SENSORS 8
+DeviceAddress      temp_addr[MAX_TEMP_SENSORS];   // fixed sensor addresses, read once at boot
 #endif
 
 #if BUF_SIZE > SERIAL_RX_BUFFER_SIZE
@@ -529,9 +534,13 @@ void setup() {
 #if TEMP_ENABLE
 	temp_sensors.begin();
 	temp_count = temp_sensors.getDeviceCount();
+	if (temp_count > MAX_TEMP_SENSORS) temp_count = MAX_TEMP_SENSORS;
+	for (int s = 0; s < temp_count; s++) {
+		temp_sensors.getAddress(temp_addr[s], s);   // resolve index -> address once
+	}
 	temp_sensors.setResolution(12);   // 12-bit = 0.0625 deg C resolution
 	if (temp_count > 0) {
-		// first conversion: wait blocking so getTempCByIndex() returns a
+		// first conversion: wait blocking so getTempC() returns a
 		// valid value immediately rather than NaN/garbage on the first read
 		temp_sensors.setWaitForConversion(true);
 		temp_sensors.requestTemperatures();
@@ -552,7 +561,7 @@ void send_temp_blocks() {
 
 	// retrieve results from previous async conversion
 	for (int s = 0; s < temp_count; s++) {
-		float t = temp_sensors.getTempCByIndex(s);
+		float t = temp_sensors.getTempC(temp_addr[s]);   // read by fixed address, not volatile index
 		if (t == DEVICE_DISCONNECTED_C) continue;
 
 		// SER# encodes pin and sensor index: TEMP-P2-S0, TEMP-P2-S1, ...

@@ -33,6 +33,9 @@
 // Set TEMP_ENABLE to 0 to disable. Set TEMP_PIN to the DATA pin.
 // Wiring: VCC->5V, GND->GND, DATA->TEMP_PIN, 4.7k pull-up 5V->DATA.
 // Requires: OneWire + DallasTemperature (Arduino Library Manager).
+// Sensors are read by their fixed 64-bit address (resolved once at
+// boot), not by library index -- this avoids a rare mix-up where two
+// sensors on the same bus swap readings for a single cycle.
 #define TEMP_ENABLE     1
 #define TEMP_PIN        2
 #define TEMP_INTERVAL   5000UL
@@ -45,6 +48,8 @@ OneWire            temp_wire(TEMP_PIN);
 DallasTemperature  temp_sensors(&temp_wire);
 unsigned long      temp_last  = 0;
 int                temp_count = 0;
+#define MAX_TEMP_SENSORS 8
+DeviceAddress      temp_addr[MAX_TEMP_SENSORS];   // fixed sensor addresses, read once at boot
 #endif
 #if BUF_SIZE > SERIAL_RX_BUFFER_SIZE
 #error "BUF_SIZE exceeds SERIAL_RX_BUFFER_SIZE ? increase hardware RX buffer"
@@ -99,7 +104,7 @@ void send_temp_blocks() {
 	if (millis() - temp_last < TEMP_INTERVAL) return;
 	temp_last = millis();
 	for (int s = 0; s < temp_count; s++) {
-		float t = temp_sensors.getTempCByIndex(s);
+		float t = temp_sensors.getTempC(temp_addr[s]);   // read by fixed address, not volatile index
 		if (t == DEVICE_DISCONNECTED_C) continue;
 		char ser[24], tmp[16];
 		sprintf(ser, "TEMP-P%d-S%d", TEMP_PIN, s);
@@ -135,6 +140,10 @@ void setup() {
 #if TEMP_ENABLE
 	temp_sensors.begin();
 	temp_count = temp_sensors.getDeviceCount();
+	if (temp_count > MAX_TEMP_SENSORS) temp_count = MAX_TEMP_SENSORS;
+	for (int s = 0; s < temp_count; s++) {
+		temp_sensors.getAddress(temp_addr[s], s);   // resolve index -> address once
+	}
 	temp_sensors.setResolution(12);
 	if (temp_count > 0) {
 		temp_sensors.setWaitForConversion(true);
