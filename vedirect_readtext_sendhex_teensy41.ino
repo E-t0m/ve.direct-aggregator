@@ -44,7 +44,7 @@
 #define TEMP_INTERVAL   5000UL
 
 #if TEMP_ENABLE
-#include <avr/wdt.h>   // for watchdog reset
+#define CPU_RESTART  (SCB_AIRCR = 0x05FA0004)   // software reset of the Teensy 4.1
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);
@@ -312,8 +312,8 @@ void process_cmd(char* line) {
 	if (strcmp(line, "RESET") == 0) {
 		forward_all("RESET");   // propagate to all downstream devices
 		delay(50);              // let transmission complete
-		wdt_enable(WDTO_15MS);
-		while(1);               // watchdog fires and resets MCU
+		CPU_RESTART;
+		while(1);               // not reached
 	}
 	if (strcmp(line, "WHO") == 0) {
 		SEROUT.print("SENDHEX Teensy41 N=");
