@@ -379,7 +379,7 @@ void process_cmd(char* line) {
 		for (int i = 0; i < N; i++) {
 			if (!dev_known[i]) continue;
 			if (known_vbat[i] <= 1.0f) {   // watts -> amps needs Vbat
-				char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", known_ser[i]);
+				char msg[64]; sprintf(msg, "ERR %.15s vbat unknown\n", known_ser[i]);
 				SEROUT.print(msg);
 				continue;
 			}
@@ -394,23 +394,23 @@ void process_cmd(char* line) {
 				uint16_t da   = (uint16_t)((float)watts / known_vbat[i] * 10.0f + 0.5f);
 				char reply[64]; char msg[128];
 				if (!wait_hex_reply(ports[i], reply, sizeof(reply))) {
-					sprintf(msg, "ERR %s timeout\n", known_ser[i]);
+					sprintf(msg, "ERR %.15s timeout\n", known_ser[i]);
 					SEROUT.print(msg); send_text_mode(ports[i]);
 					hex_busy[i] = false; continue;
 				}
 				for (int k = 0; k < N; k++) if (ports[k] != ports[i]) read_device(k);
 				send_hex_get(ports[i], REG_MAX_CURRENT);
 				if (!wait_hex_reply(ports[i], reply, sizeof(reply))) {
-					sprintf(msg, "ERR %s timeout\n", known_ser[i]);
+					sprintf(msg, "ERR %.15s timeout\n", known_ser[i]);
 				} else {
 					uint16_t rb = parse_hex_value(reply);
 					if (rb == da) {
 						char abuf[12]; dtostrf(da/10.0f, 4, 1, abuf);
-						sprintf(msg, "OK %s %luW %sA\n", known_ser[i], watts, abuf);
+						sprintf(msg, "OK %.15s %luW %sA\n", known_ser[i], watts, abuf);
 					} else {
 						char as[12]; dtostrf(da/10.0f, 4, 1, as);
 						char ar[12]; dtostrf(rb/10.0f, 4, 1, ar);
-						sprintf(msg, "ERR %s verify set=%sA rb=%sA\n", known_ser[i], as, ar);
+						sprintf(msg, "ERR %.15s verify set=%sA rb=%sA\n", known_ser[i], as, ar);
 					}
 				}
 				send_text_mode(ports[i]);
