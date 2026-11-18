@@ -438,3 +438,27 @@ the VE.Direct driver falls back to text mode automatically.
 Use this approach when no RPi/Linux host is available between the
 aggregator and the Cerbo GX. Use `vedirect_deaggregator.py` (this repo)
 when a Linux host is already in the chain.
+
+---
+
+## License and Dependencies
+
+This project is released under the [MIT License](LICENSE).
+
+It is not affiliated with or endorsed by Victron Energy. "Victron", "VE.Direct" and
+"Cerbo GX" are trademarks of their respective owners. The firmware implements the
+publicly documented VE.Direct text and HEX protocols.
+
+Third-party libraries are not part of this repository. Each is installed separately
+and remains under its own license:
+
+| Component | Used by | Source |
+|---|---|---|
+| OneWire | Arduino firmware (DS18B20 option) | Arduino Library Manager |
+| DallasTemperature | Arduino firmware (DS18B20 option) | Arduino Library Manager |
+| Raspberry Pi Pico SDK | `hardware_deagg/` | https://github.com/raspberrypi/pico-sdk |
+| TinyUSB | `hardware_deagg/` | bundled with the Pico SDK |
+
+The USB descriptors in `hardware_deagg/usb_descriptors.c` follow the structure of the
+TinyUSB device examples. The USB vendor ID `0x2E8A` belongs to Raspberry Pi; devices
+that are distributed need their own vendor ID and product ID.
