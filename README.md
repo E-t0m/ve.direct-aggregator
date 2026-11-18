@@ -295,7 +295,6 @@ Power the MCU via:
 | HEX_TIMEOUT | 500 ms | 500 ms |
 | Other ports during HEX | hardware buffer drained | hardware buffer drained |
 | SET channel | readtext_sendhex only | readtext_sendhex only |
-| `VBAT_FALLBACK` | configurable (default 24V) | configurable (default 24V) |
 | `PID_TIMEOUT` | configurable (default 10s) | configurable (default 10s) |
 | `MAX_ROUTES` | 12 per port | 12 per port |
 | `ALIVE_TIMEOUT` | 10s | 10s |
@@ -309,7 +308,7 @@ Power the MCU via:
 
 - Input port baud rates configurable per port via `port_baud[]` — direct VE.Direct devices use `BAUD_VEDIRECT` (19200), MCU-to-MCU cascade links use `BAUD_UPSTREAM` (115200)
 - During SET/HEX only the affected device port pauses — all other ports are continuously drained during `wait_hex_reply` to prevent hardware buffer overflow
-- `VBAT_FALLBACK` used until first Vbat received — SET commands in first seconds may be slightly inaccurate
+- SET needs the battery voltage: until the first Vbat value has been received from a device, SET for that device is rejected with `ERR <id> vbat unknown`
 - VE.Direct pin 4 max 10 mA — MCU must be powered externally
 - Cerbo GX / Venus GX cannot be used as direct receiver -- but fully integrable via `vedirect_deaggregator.py`
 - Multiple devices of the same type share the same PID — receivers must use `SER#` for unique identification

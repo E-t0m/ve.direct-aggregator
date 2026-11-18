@@ -38,7 +38,6 @@
 #define CMD_BUF_SIZE    64
 #define HEX_TIMEOUT     400
 #define REG_MAX_CURRENT 0x2015
-#define VBAT_FALLBACK   24.0f
 #define MAX_ROUTES      12
 #define PID_TIMEOUT     10000UL
 
@@ -52,8 +51,9 @@
 #define TEMP_PIN        2
 #define TEMP_INTERVAL   5000UL   // read interval in ms (DS18B20 needs ~750ms per conversion)
 
+#include <avr/wdt.h>   // watchdog reset for the RESET command
+
 #if TEMP_ENABLE
-#include <avr/wdt.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);
@@ -81,7 +81,7 @@ bool  hex_skip[N]   = {false, false, false};
 char  known_ser[N][16];
 bool  dev_known[N]             = {false, false, false};
 unsigned long dev_last_seen[N] = {0, 0, 0};
-float known_vbat[N]            = {VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK};
+float known_vbat[N]            = {0, 0, 0};   // 0 = no Vbat received yet
 
 char  route_ser[N][MAX_ROUTES][16];
 unsigned long route_last_seen[N][MAX_ROUTES];
@@ -194,9 +194,14 @@ void exec_set(int idx, uint32_t watts) {
 	HardwareSerial* port = ports[idx];
 	const char* id = known_ser[idx][0] ? known_ser[idx] : "?";
 	char reply[64];
+
+	if (known_vbat[idx] <= 1.0f) {   // watts -> amps needs Vbat
+		char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", id);
+		Serial.print(msg); return;
+	}
 	hex_busy[idx] = true;
 
-	float    vbat     = (known_vbat[idx] > 1.0f) ? known_vbat[idx] : VBAT_FALLBACK;
+	float    vbat     = known_vbat[idx];
 	float    amps     = (float)watts / vbat;
 	uint16_t deciamps = (uint16_t)(amps * 10.0f + 0.5f);
 
@@ -331,6 +336,7 @@ void process_cmd(char* line) {
 		if (dev_known[i] && (now - dev_last_seen[i] > PID_TIMEOUT)) {
 			dev_known[i]    = false;
 			known_ser[i][0] = '\0';
+			known_vbat[i]   = 0;
 		}
 	}
 

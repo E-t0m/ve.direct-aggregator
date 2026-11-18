@@ -42,8 +42,9 @@
 #define TEMP_PIN        2
 #define TEMP_INTERVAL   5000UL
 
+#include <avr/wdt.h>   // watchdog reset for the RESET command
+
 #if TEMP_ENABLE
-#include <avr/wdt.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);

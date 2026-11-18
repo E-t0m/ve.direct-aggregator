@@ -84,6 +84,14 @@ ERR <id> timeout\n
 
 No HEX ACK within `HEX_TIMEOUT` (500 ms). Text mode restored regardless.
 
+### SET — Vbat unknown
+
+```
+ERR <id> vbat unknown\n
+```
+
+No `Vbat` value has been received from the device yet, so watts cannot be converted to amps. Nothing is sent to the device. Retry after the next text block (about 1 s).
+
 ### SET — verify mismatch
 
 ```
@@ -110,7 +118,7 @@ ERR <id> timeout\n
 
 ## Behaviour
 
-**Watts-to-amps conversion:** `reg = round(watts / Vbat × 10)` — register unit 0.1A. `Vbat` is learned continuously from the text stream. Until first `Vbat` is received, `VBAT_FALLBACK` is used (default 24V).
+**Watts-to-amps conversion:** `reg = round(watts / Vbat × 10)` — register unit 0.1A. `Vbat` is learned continuously from the text stream. Until the first `Vbat` is received from a device, SET for that device is rejected with `ERR <id> vbat unknown`.
 
 **Device routing:** the firmware learns SER# for each directly connected device from passing blocks. Commands are matched by SER#. Unknown identifiers are forwarded on all ports (fallback). Device entries expire after `PID_TIMEOUT` ms (10s) of inactivity.
 
@@ -167,7 +175,7 @@ Typical duration: ~50–100 ms. Maximum: 2 x `HEX_TIMEOUT` = 800ms.
 | No HEX ACK within `HEX_TIMEOUT` (400ms) | `ERR <id> timeout`, text mode restored, `hex_busy` cleared |
 | Verify mismatch | `ERR <id> verify`, text mode restored, `hex_busy` cleared |
 | Unknown identifier | Command forwarded on all ports |
-| Vbat not yet received | `VBAT_FALLBACK` used for conversion |
+| Vbat not yet received | `ERR <id> vbat unknown`, no HEX sent, `hex_busy` not set |
 | HEX string without trailing `\n` | Firmware appends `\n` |
 
 ---

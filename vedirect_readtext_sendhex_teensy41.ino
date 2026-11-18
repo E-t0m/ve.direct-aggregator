@@ -29,7 +29,6 @@
 #define CMD_BUF_SIZE    64
 #define HEX_TIMEOUT     400
 #define REG_MAX_CURRENT 0x2015
-#define VBAT_FALLBACK   24.0f
 #define MAX_ROUTES      12
 #define PID_TIMEOUT     10000UL
 
@@ -43,8 +42,9 @@
 #define TEMP_PIN        2
 #define TEMP_INTERVAL   5000UL
 
-#if TEMP_ENABLE
 #define CPU_RESTART  (SCB_AIRCR = 0x05FA0004)   // software reset of the Teensy 4.1
+
+#if TEMP_ENABLE
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);
@@ -83,7 +83,7 @@ int   buf_len[N]         = {0, 0, 0, 0, 0, 0, 0};
 char  known_ser[N][16];
 bool  dev_known[N]       = {false, false, false, false, false, false, false};
 unsigned long dev_last_seen[N] = {0, 0, 0, 0, 0, 0, 0};
-float known_vbat[N]      = {VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK};
+float known_vbat[N]      = {0, 0, 0, 0, 0, 0, 0};   // 0 = no Vbat received yet
 
 // route table
 char  route_ser[N][MAX_ROUTES][16];
@@ -202,9 +202,14 @@ void exec_set(int idx, uint32_t watts) {
 	HardwareSerial* port = ports[idx];
 	const char* pid = known_ser[idx][0] ? known_ser[idx] : "?";
 	char reply[64];
+
+	if (known_vbat[idx] <= 1.0f) {   // watts -> amps needs Vbat
+		char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", pid);
+		SEROUT.print(msg); return;
+	}
 	hex_busy[idx] = true;
 
-	float    vbat     = (known_vbat[idx] > 1.0f) ? known_vbat[idx] : VBAT_FALLBACK;
+	float    vbat     = known_vbat[idx];
 	float    amps     = (float)watts / vbat;
 	uint16_t deciamps = (uint16_t)(amps * 10.0f + 0.5f);
 
@@ -337,6 +342,7 @@ void process_cmd(char* line) {
 		if (dev_known[i] && (now - dev_last_seen[i] > PID_TIMEOUT)) {
 			dev_known[i]    = false;
 			known_ser[i][0] = '\0';
+			known_vbat[i]   = 0;
 		}
 	}
 
@@ -369,19 +375,23 @@ void process_cmd(char* line) {
 	uint32_t watts = (uint32_t)atol(p);
 	if (is_all) {
 		// pseudo-multicast: send HEX SET to all direct ports simultaneously
+		bool sent[N] = {false};
 		for (int i = 0; i < N; i++) {
-			if (dev_known[i]) {
-				hex_busy[i] = true;
-				float vbat = (known_vbat[i] > 1.0f) ? known_vbat[i] : VBAT_FALLBACK;
-				uint16_t da = (uint16_t)((float)watts / vbat * 10.0f + 0.5f);
-				send_hex_set(ports[i], REG_MAX_CURRENT, da);
+			if (!dev_known[i]) continue;
+			if (known_vbat[i] <= 1.0f) {   // watts -> amps needs Vbat
+				char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", known_ser[i]);
+				SEROUT.print(msg);
+				continue;
 			}
+			hex_busy[i] = true;
+			sent[i] = true;
+			uint16_t da = (uint16_t)((float)watts / known_vbat[i] * 10.0f + 0.5f);
+			send_hex_set(ports[i], REG_MAX_CURRENT, da);
 		}
 		// collect replies, verify, restore text mode one by one
 		for (int i = 0; i < N; i++) {
-			if (dev_known[i]) {
-				float    vbat = (known_vbat[i] > 1.0f) ? known_vbat[i] : VBAT_FALLBACK;
-				uint16_t da   = (uint16_t)((float)watts / vbat * 10.0f + 0.5f);
+			if (sent[i]) {
+				uint16_t da   = (uint16_t)((float)watts / known_vbat[i] * 10.0f + 0.5f);
 				char reply[64]; char msg[128];
 				if (!wait_hex_reply(ports[i], reply, sizeof(reply))) {
 					sprintf(msg, "ERR %s timeout\n", known_ser[i]);

@@ -40,8 +40,9 @@
 #define TEMP_PIN        2
 #define TEMP_INTERVAL   5000UL
 
-#if TEMP_ENABLE
 #define CPU_RESTART  (SCB_AIRCR = 0x05FA0004)   // software reset of the Teensy 4.1
+
+#if TEMP_ENABLE
 #include <OneWire.h>
 #include <DallasTemperature.h>
 OneWire            temp_wire(TEMP_PIN);

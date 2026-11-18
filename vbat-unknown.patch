@@ -1,0 +1,185 @@
+diff --git a/README.md b/README.md
+index c72d4bf..0903d58 100644
+--- a/README.md
++++ b/README.md
+@@ -295,7 +295,6 @@ Power the MCU via:
+ | HEX_TIMEOUT | 500 ms | 500 ms |
+ | Other ports during HEX | hardware buffer drained | hardware buffer drained |
+ | SET channel | readtext_sendhex only | readtext_sendhex only |
+-| `VBAT_FALLBACK` | configurable (default 24V) | configurable (default 24V) |
+ | `PID_TIMEOUT` | configurable (default 10s) | configurable (default 10s) |
+ | `MAX_ROUTES` | 12 per port | 12 per port |
+ | `ALIVE_TIMEOUT` | 10s | 10s |
+@@ -309,7 +308,7 @@ Power the MCU via:
+ 
+ - Input port baud rates configurable per port via `port_baud[]` — direct VE.Direct devices use `BAUD_VEDIRECT` (19200), MCU-to-MCU cascade links use `BAUD_UPSTREAM` (115200)
+ - During SET/HEX only the affected device port pauses — all other ports are continuously drained during `wait_hex_reply` to prevent hardware buffer overflow
+-- `VBAT_FALLBACK` used until first Vbat received — SET commands in first seconds may be slightly inaccurate
++- SET needs the battery voltage: until the first Vbat value has been received from a device, SET for that device is rejected with `ERR <id> vbat unknown`
+ - VE.Direct pin 4 max 10 mA — MCU must be powered externally
+ - Cerbo GX / Venus GX cannot be used as direct receiver -- but fully integrable via `vedirect_deaggregator.py`
+ - Multiple devices of the same type share the same PID — receivers must use `SER#` for unique identification
+diff --git a/aggregator_spec_de.md b/aggregator_spec_de.md
+index 44b9e89..d478cb9 100644
+--- a/aggregator_spec_de.md
++++ b/aggregator_spec_de.md
+@@ -260,7 +260,6 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
+ | RX-Puffer pro Port | 300 Bytes | 300 Bytes |
+ | `MAX_ROUTES` | 12 pro Port | 12 pro Port |
+ | `PID_TIMEOUT` | 10s (konfigurierbar) | 10s (konfigurierbar) |
+-| `VBAT_FALLBACK` | 24V (konfigurierbar) | 24V (konfigurierbar) |
+ 
+ ---
+ 
+@@ -280,7 +279,7 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
+ ## Einschränkungen
+ 
+ - Mehrere Geräte gleichen Typs teilen dieselbe PID — Empfänger müssen `SER#` kombinieren
+-- `VBAT_FALLBACK` wird verwendet bis der erste Vbat-Wert empfangen wird
++- SET benötigt die Batteriespannung: bis der erste Vbat-Wert eines Geräts empfangen wurde, wird SET für dieses Gerät mit `ERR <id> vbat unknown` abgelehnt
+ - VE.Direct Pin 4 max. 10 mA — MCU muss extern versorgt werden
+ - Cerbo GX / Venus GX nicht direkt nutzbar -- mit `vedirect_deaggregator.py` aber voll integrierbar
+ - Teensy 4.1: BSS138 an allen RX-Eingängen erforderlich (+ TX bei readtext_sendhex)
+diff --git a/powerset_interface_spec.md b/powerset_interface_spec.md
+index 54f32eb..704bc2c 100644
+--- a/powerset_interface_spec.md
++++ b/powerset_interface_spec.md
+@@ -84,6 +84,14 @@ ERR <id> timeout\n
+ 
+ No HEX ACK within `HEX_TIMEOUT` (500 ms). Text mode restored regardless.
+ 
++### SET — Vbat unknown
++
++```
++ERR <id> vbat unknown\n
++```
++
++No `Vbat` value has been received from the device yet, so watts cannot be converted to amps. Nothing is sent to the device. Retry after the next text block (about 1 s).
++
+ ### SET — verify mismatch
+ 
+ ```
+@@ -110,7 +118,7 @@ ERR <id> timeout\n
+ 
+ ## Behaviour
+ 
+-**Watts-to-amps conversion:** `reg = round(watts / Vbat × 10)` — register unit 0.1A. `Vbat` is learned continuously from the text stream. Until first `Vbat` is received, `VBAT_FALLBACK` is used (default 24V).
++**Watts-to-amps conversion:** `reg = round(watts / Vbat × 10)` — register unit 0.1A. `Vbat` is learned continuously from the text stream. Until the first `Vbat` is received from a device, SET for that device is rejected with `ERR <id> vbat unknown`.
+ 
+ **Device routing:** the firmware learns SER# for each directly connected device from passing blocks. Commands are matched by SER#. Unknown identifiers are forwarded on all ports (fallback). Device entries expire after `PID_TIMEOUT` ms (10s) of inactivity.
+ 
+@@ -167,7 +175,7 @@ Typical duration: ~50–100 ms. Maximum: 2 x `HEX_TIMEOUT` = 800ms.
+ | No HEX ACK within `HEX_TIMEOUT` (400ms) | `ERR <id> timeout`, text mode restored, `hex_busy` cleared |
+ | Verify mismatch | `ERR <id> verify`, text mode restored, `hex_busy` cleared |
+ | Unknown identifier | Command forwarded on all ports |
+-| Vbat not yet received | `VBAT_FALLBACK` used for conversion |
++| Vbat not yet received | `ERR <id> vbat unknown`, no HEX sent, `hex_busy` not set |
+ | HEX string without trailing `\n` | Firmware appends `\n` |
+ 
+ ---
+diff --git a/vedirect_readtext_sendhex.ino b/vedirect_readtext_sendhex.ino
+index 3baa7e6..21983c1 100644
+--- a/vedirect_readtext_sendhex.ino
++++ b/vedirect_readtext_sendhex.ino
+@@ -38,7 +38,6 @@
+ #define CMD_BUF_SIZE    64
+ #define HEX_TIMEOUT     400
+ #define REG_MAX_CURRENT 0x2015
+-#define VBAT_FALLBACK   24.0f
+ #define MAX_ROUTES      12
+ #define PID_TIMEOUT     10000UL
+ 
+@@ -81,7 +80,7 @@ bool  hex_skip[N]   = {false, false, false};
+ char  known_ser[N][16];
+ bool  dev_known[N]             = {false, false, false};
+ unsigned long dev_last_seen[N] = {0, 0, 0};
+-float known_vbat[N]            = {VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK};
++float known_vbat[N]            = {0, 0, 0};   // 0 = no Vbat received yet
+ 
+ char  route_ser[N][MAX_ROUTES][16];
+ unsigned long route_last_seen[N][MAX_ROUTES];
+@@ -194,9 +193,14 @@ void exec_set(int idx, uint32_t watts) {
+ 	HardwareSerial* port = ports[idx];
+ 	const char* id = known_ser[idx][0] ? known_ser[idx] : "?";
+ 	char reply[64];
++
++	if (known_vbat[idx] <= 1.0f) {   // watts -> amps needs Vbat
++		char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", id);
++		Serial.print(msg); return;
++	}
+ 	hex_busy[idx] = true;
+ 
+-	float    vbat     = (known_vbat[idx] > 1.0f) ? known_vbat[idx] : VBAT_FALLBACK;
++	float    vbat     = known_vbat[idx];
+ 	float    amps     = (float)watts / vbat;
+ 	uint16_t deciamps = (uint16_t)(amps * 10.0f + 0.5f);
+ 
+diff --git a/vedirect_readtext_sendhex_teensy41.ino b/vedirect_readtext_sendhex_teensy41.ino
+index cfdf15b..e8fc768 100644
+--- a/vedirect_readtext_sendhex_teensy41.ino
++++ b/vedirect_readtext_sendhex_teensy41.ino
+@@ -29,7 +29,6 @@
+ #define CMD_BUF_SIZE    64
+ #define HEX_TIMEOUT     400
+ #define REG_MAX_CURRENT 0x2015
+-#define VBAT_FALLBACK   24.0f
+ #define MAX_ROUTES      12
+ #define PID_TIMEOUT     10000UL
+ 
+@@ -83,7 +82,7 @@ int   buf_len[N]         = {0, 0, 0, 0, 0, 0, 0};
+ char  known_ser[N][16];
+ bool  dev_known[N]       = {false, false, false, false, false, false, false};
+ unsigned long dev_last_seen[N] = {0, 0, 0, 0, 0, 0, 0};
+-float known_vbat[N]      = {VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK, VBAT_FALLBACK};
++float known_vbat[N]      = {0, 0, 0, 0, 0, 0, 0};   // 0 = no Vbat received yet
+ 
+ // route table
+ char  route_ser[N][MAX_ROUTES][16];
+@@ -202,9 +201,14 @@ void exec_set(int idx, uint32_t watts) {
+ 	HardwareSerial* port = ports[idx];
+ 	const char* pid = known_ser[idx][0] ? known_ser[idx] : "?";
+ 	char reply[64];
++
++	if (known_vbat[idx] <= 1.0f) {   // watts -> amps needs Vbat
++		char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", pid);
++		SEROUT.print(msg); return;
++	}
+ 	hex_busy[idx] = true;
+ 
+-	float    vbat     = (known_vbat[idx] > 1.0f) ? known_vbat[idx] : VBAT_FALLBACK;
++	float    vbat     = known_vbat[idx];
+ 	float    amps     = (float)watts / vbat;
+ 	uint16_t deciamps = (uint16_t)(amps * 10.0f + 0.5f);
+ 
+@@ -369,19 +373,23 @@ void process_cmd(char* line) {
+ 	uint32_t watts = (uint32_t)atol(p);
+ 	if (is_all) {
+ 		// pseudo-multicast: send HEX SET to all direct ports simultaneously
++		bool sent[N] = {false};
+ 		for (int i = 0; i < N; i++) {
+-			if (dev_known[i]) {
+-				hex_busy[i] = true;
+-				float vbat = (known_vbat[i] > 1.0f) ? known_vbat[i] : VBAT_FALLBACK;
+-				uint16_t da = (uint16_t)((float)watts / vbat * 10.0f + 0.5f);
+-				send_hex_set(ports[i], REG_MAX_CURRENT, da);
++			if (!dev_known[i]) continue;
++			if (known_vbat[i] <= 1.0f) {   // watts -> amps needs Vbat
++				char msg[64]; sprintf(msg, "ERR %s vbat unknown\n", known_ser[i]);
++				SEROUT.print(msg);
++				continue;
+ 			}
++			hex_busy[i] = true;
++			sent[i] = true;
++			uint16_t da = (uint16_t)((float)watts / known_vbat[i] * 10.0f + 0.5f);
++			send_hex_set(ports[i], REG_MAX_CURRENT, da);
+ 		}
+ 		// collect replies, verify, restore text mode one by one
+ 		for (int i = 0; i < N; i++) {
+-			if (dev_known[i]) {
+-				float    vbat = (known_vbat[i] > 1.0f) ? known_vbat[i] : VBAT_FALLBACK;
+-				uint16_t da   = (uint16_t)((float)watts / vbat * 10.0f + 0.5f);
++			if (sent[i]) {
++				uint16_t da   = (uint16_t)((float)watts / known_vbat[i] * 10.0f + 0.5f);
+ 				char reply[64]; char msg[128];
+ 				if (!wait_hex_reply(ports[i], reply, sizeof(reply))) {
+ 					sprintf(msg, "ERR %s timeout\n", known_ser[i]);

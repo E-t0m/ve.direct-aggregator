@@ -260,7 +260,6 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
 | RX-Puffer pro Port | 300 Bytes | 300 Bytes |
 | `MAX_ROUTES` | 12 pro Port | 12 pro Port |
 | `PID_TIMEOUT` | 10s (konfigurierbar) | 10s (konfigurierbar) |
-| `VBAT_FALLBACK` | 24V (konfigurierbar) | 24V (konfigurierbar) |
 
 ---
 
@@ -280,7 +279,7 @@ Externer Strom und USB können gleichzeitig angeschlossen sein — der Mega scha
 ## Einschränkungen
 
 - Mehrere Geräte gleichen Typs teilen dieselbe PID — Empfänger müssen `SER#` kombinieren
-- `VBAT_FALLBACK` wird verwendet bis der erste Vbat-Wert empfangen wird
+- SET benötigt die Batteriespannung: bis der erste Vbat-Wert eines Geräts empfangen wurde, wird SET für dieses Gerät mit `ERR <id> vbat unknown` abgelehnt
 - VE.Direct Pin 4 max. 10 mA — MCU muss extern versorgt werden
 - Cerbo GX / Venus GX nicht direkt nutzbar -- mit `vedirect_deaggregator.py` aber voll integrierbar
 - Teensy 4.1: BSS138 an allen RX-Eingängen erforderlich (+ TX bei readtext_sendhex)
